@@ -276,6 +276,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	log.Printf("客户端 %s 认证成功，用户名: %s", clientAddr, username)
 
+	// 清理认证挑战数据，节约内存
+	s.connAuthMutex.Lock()
+	delete(s.connAuth, clientAddr)
+	s.connAuthMutex.Unlock()
+
 	// 发送认证成功响应
 	if err := s.sendOKPacket(conn); err != nil {
 		log.Printf("发送OK包失败: %v", err)
@@ -384,8 +389,14 @@ func (s *Server) sendMySQLHandshake(conn net.Conn) error {
 		}
 	}
 
-	// 保存认证挑战，便于后续认证时使用
-	conn.(*net.TCPConn).SetNoDelay(true) // 禁用Nagle算法提高响应速度
+	// 保存认证挑战，供认证阶段使用
+	clientAddr := conn.RemoteAddr().String()
+	s.connAuthMutex.Lock()
+	s.connAuth[clientAddr] = challenge
+	s.connAuthMutex.Unlock()
+
+	// 禁用Nagle算法提高响应速度
+	conn.(*net.TCPConn).SetNoDelay(true)
 
 	// 分配新的连接ID
 	connID := atomic.AddUint32(&s.nextConnectionID, 1)
@@ -487,10 +498,23 @@ func (s *Server) sendMySQLHandshake(conn net.Conn) error {
 
 // 处理客户端认证
 func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
+	// 获取客户端地址
+	clientAddr := conn.RemoteAddr().String()
+
+	// 检索之前保存的认证挑战
+	s.connAuthMutex.Lock()
+	challenge, exists := s.connAuth[clientAddr]
+	s.connAuthMutex.Unlock()
+
+	if !exists {
+		return "", fmt.Errorf("未找到认证挑战数据")
+	}
+
 	// 创建连接上下文
 	connCtx := &Connection{
 		ID:          atomic.LoadUint32(&s.nextConnectionID),
-		Addr:        conn.RemoteAddr().String(),
+		Addr:        clientAddr,
+		Challenge:   challenge,
 		LastCmdTime: time.Now(),
 		Attrs:       make(map[string]string),
 		SequenceID:  1, // 预期客户端认证包序列号为1
@@ -573,6 +597,7 @@ func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
 		connCtx.Username, connCtx.Charset, maxPacketSize)
 
 	// 处理认证响应
+	var authResponse []byte
 	if (clientCapabilities & CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) != 0 {
 		// 变长长度编码
 		if packetLen <= pos {
@@ -586,8 +611,11 @@ func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
 			return "", fmt.Errorf("无效的认证包: 太短，无法读取完整认证数据")
 		}
 
-		// 跳过认证响应数据
-		pos += authLen
+		if authLen > 0 {
+			authResponse = make([]byte, authLen)
+			copy(authResponse, authData[pos:pos+authLen])
+			pos += authLen
+		}
 	} else if (clientCapabilities & CLIENT_SECURE_CONNECTION) != 0 {
 		// 固定长度认证响应，前导字节指示长度
 		if packetLen <= pos {
@@ -601,12 +629,17 @@ func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
 			return "", fmt.Errorf("无效的认证包: 太短，无法读取完整认证数据")
 		}
 
-		// 跳过认证响应数据
-		pos += authLen
+		if authLen > 0 {
+			authResponse = make([]byte, authLen)
+			copy(authResponse, authData[pos:pos+authLen])
+			pos += authLen
+		}
 	} else {
 		// 旧的认证方式 (NUL结尾)
 		authEnd := bytes.IndexByte(authData[pos:], 0)
 		if authEnd != -1 {
+			authResponse = make([]byte, authEnd)
+			copy(authResponse, authData[pos:pos+authEnd])
 			pos += authEnd + 1
 		}
 	}
@@ -625,23 +658,22 @@ func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
 		pluginNameEnd := bytes.IndexByte(authData[pos:], 0)
 		if pluginNameEnd != -1 {
 			pluginName := string(authData[pos : pos+pluginNameEnd])
-			if pluginName != s.authPluginName {
-				log.Printf("警告: 客户端请求的插件 '%s' 与服务器期望的 '%s' 不匹配",
-					pluginName, s.authPluginName)
+			if pluginName != "mysql_native_password" {
+				log.Printf("警告: 客户端请求的插件 '%s' 与服务器期望的 'mysql_native_password' 不匹配",
+					pluginName)
 			}
 		}
 	}
 
+	// 处理认证数据，验证密码
 	// 在实际系统中，应该验证用户名和密码
-	// 为了简化演示，我们接受任何用户
+	// 为简化演示，我们接受任何用户名
+	if authResponse != nil {
+		log.Printf("收到认证响应: %x", authResponse)
+	}
 
 	// 更新包序列号
 	connCtx.SequenceID = sequenceID + 1
-
-	// 将认证挑战数据保存到connAuth
-	s.connAuthMutex.Lock()
-	s.connAuth[conn.RemoteAddr().String()] = challenge
-	s.connAuthMutex.Unlock()
 
 	return connCtx.Username, nil
 }
@@ -752,6 +784,9 @@ func (s *Server) receiveClientCommand(conn net.Conn) (string, error) {
 	}
 
 	packetLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+	sequenceID := header[3]
+
+	log.Printf("接收命令包: 长度=%d, 序列号=%d", packetLen, sequenceID)
 
 	// 读取命令包
 	cmdPacket := make([]byte, packetLen)
@@ -764,18 +799,29 @@ func (s *Server) receiveClientCommand(conn net.Conn) (string, error) {
 		return "", fmt.Errorf("空命令包")
 	}
 
-	// COM_QUERY = 3
-	if cmdPacket[0] == 3 {
-		return string(cmdPacket[1:]), nil
-	}
+	// 记录命令类型
+	cmdType := cmdPacket[0]
+	log.Printf("命令类型: %d", cmdType)
 
-	// COM_QUIT = 1
-	if cmdPacket[0] == 1 {
+	// 处理已知的命令类型
+	switch cmdType {
+	case 1: // COM_QUIT
 		return "quit", nil
+	case 3: // COM_QUERY
+		query := string(cmdPacket[1:])
+		log.Printf("收到查询: %s", query)
+		return query, nil
+	case 2: // COM_INIT_DB - 选择数据库
+		dbName := string(cmdPacket[1:])
+		log.Printf("选择数据库: %s", dbName)
+		return "USE " + dbName, nil
+	case 18: // COM_CHANGE_USER - 更改用户
+		log.Printf("更改用户请求")
+		return "", nil
+	default:
+		log.Printf("不支持的命令类型: %d", cmdType)
+		return "", fmt.Errorf("不支持的命令类型: %d", cmdType)
 	}
-
-	// 其他命令类型暂不支持
-	return "", fmt.Errorf("不支持的命令类型: %d", cmdPacket[0])
 }
 
 // 发送结果包
