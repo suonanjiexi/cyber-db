@@ -37,6 +37,7 @@ type Server struct {
 	activeQueries  int32               // 当前活跃查询数
 	metrics        map[string]int64    // 性能指标统计
 	metricsMutex   sync.Mutex          // 指标互斥锁
+	wg             sync.WaitGroup      // 等待组，用于等待所有连接处理完毕
 }
 
 // NewServer 创建一个新的数据库服务器
@@ -80,21 +81,21 @@ func (s *Server) Start() error {
 	defer s.mutex.Unlock()
 
 	if s.running {
-		return fmt.Errorf("server already running")
+		return fmt.Errorf("服务器已经在运行")
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to start server: %w", err)
+		return fmt.Errorf("无法监听 %s: %v", addr, err)
 	}
 
 	s.listener = listener
 	s.running = true
 
-	log.Printf("Server started on %s\n", addr)
+	log.Printf("服务器正在监听 %s", addr)
 
-	// 在后台处理连接
+	s.wg.Add(1)
 	go s.acceptConnections()
 
 	return nil
@@ -119,40 +120,33 @@ func (s *Server) Stop() error {
 
 	// 关闭监听器
 	if err := s.listener.Close(); err != nil {
-		return fmt.Errorf("failed to stop server: %w", err)
+		return fmt.Errorf("关闭监听器时出错: %v", err)
 	}
 
 	s.running = false
-	log.Println("Server stopped")
+	s.wg.Wait()
+	log.Println("服务器已停止")
 	return nil
 }
 
 // acceptConnections 接受并处理客户端连接
 func (s *Server) acceptConnections() {
-	for {
+	defer s.wg.Done()
+
+	for s.running {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			// 如果服务器已关闭，停止接受连接
-			s.mutex.RLock()
-			running := s.running
-			s.mutex.RUnlock()
-
-			if !running {
-				break
+			if s.running {
+				log.Printf("接受连接时出错: %v", err)
 			}
-
-			log.Printf("Error accepting connection: %v\n", err)
-			continue
+			break
 		}
 
-		// 为每个连接启动一个goroutine处理
-		connID := fmt.Sprintf("%s-%d", conn.RemoteAddr().String(), time.Now().UnixNano())
-
-		// 记录连接
 		s.connMutex.Lock()
-		s.conns[connID] = conn
+		s.conns[conn.RemoteAddr().String()] = conn
 		s.connMutex.Unlock()
 
+		s.wg.Add(1)
 		go func(id string, c net.Conn) {
 			s.handleConnection(c)
 
@@ -160,13 +154,17 @@ func (s *Server) acceptConnections() {
 			s.connMutex.Lock()
 			delete(s.conns, id)
 			s.connMutex.Unlock()
-		}(connID, conn)
+		}(conn.RemoteAddr().String(), conn)
 	}
 }
 
 // handleConnection 处理客户端连接
 func (s *Server) handleConnection(conn net.Conn) {
+	defer s.wg.Done()
 	defer conn.Close()
+
+	clientAddr := conn.RemoteAddr().String()
+	log.Printf("新连接来自 %s", clientAddr)
 
 	// 检查连接数是否超过最大限制
 	s.connMutex.Lock()
@@ -288,6 +286,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 	if err := scanner.Err(); err != nil {
 		log.Printf("Error reading from connection: %v\n", err)
 	}
+
+	log.Printf("连接关闭: %s", clientAddr)
 }
 
 // executeStatement 执行SQL语句

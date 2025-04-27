@@ -1,0 +1,22 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 项目结构
+
+Cyber-DB 是一个用 Go 语言实现的去中心化高性能分布式关系型数据库系统。
+
+## 项目目录结构
+
+- [cmd/cyberdb/main.go](mdc:cmd/cyberdb/main.go) - 数据库服务器程序入口点
+- `pkg/` - 核心包
+  - [pkg/storage](mdc:pkg/storage) - 存储引擎，负责数据的持久化存储
+  - [pkg/parser](mdc:pkg/parser) - SQL解析器，解析和验证SQL语句
+  - [pkg/transaction](mdc:pkg/transaction) - 事务管理，处理事务的开始、提交和回滚
+  - [pkg/server](mdc:pkg/server) - 网络服务，处理客户端连接和请求
+  - [pkg/cluster](mdc:pkg/cluster) - 集群管理，处理节点通信和协调
+  - [pkg/metrics](mdc:pkg/metrics) - 性能指标收集和监控
+  - [pkg/admin](mdc:pkg/admin) - 管理接口和工具
+- `examples/` - 示例代码
+

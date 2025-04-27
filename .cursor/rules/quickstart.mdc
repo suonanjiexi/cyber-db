@@ -1,0 +1,64 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 快速入门指南
+
+Cyber-DB 是一个高性能分布式关系型数据库系统，以下是开始使用的基本指南。
+
+## 编译与启动
+
+1. 编译服务器：
+```bash
+go build -o cyberdb ./cmd/cyberdb
+```
+
+2. 启动单节点服务器：
+```bash
+./cyberdb -host localhost -port 3306 -db ./data
+```
+
+3. 启动集群模式：
+```bash
+# 启动种子节点
+./cyberdb -cluster-mode -node-id node1 -cluster-addr 127.0.0.1:7001
+
+# 加入集群
+./cyberdb -cluster-mode -node-id node2 -cluster-addr 127.0.0.1:7002 -join 127.0.0.1:7001
+```
+
+## 基本SQL操作
+
+### 创建表
+```sql
+CREATE TABLE users (id, name, email, age)
+```
+
+### 插入数据
+```sql
+INSERT INTO users (id, name, email, age) VALUES (1, "张三", "zhangsan@example.com", "30")
+```
+
+### 查询数据
+```sql
+SELECT * FROM users WHERE age > 25
+SELECT name, email FROM users ORDER BY name LIMIT 10
+```
+
+### 创建索引
+```sql
+CREATE INDEX idx_user_name ON users (name)
+CREATE UNIQUE INDEX idx_user_email ON users (email)
+```
+
+### 更新数据
+```sql
+UPDATE users SET age = 31 WHERE id = 1
+```
+
+### 删除数据
+```sql
+DELETE FROM users WHERE id = 1
+```
+

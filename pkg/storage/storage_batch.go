@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 )
 
 // flushBatch 执行批量写入
@@ -145,115 +146,119 @@ func (db *DB) persistToDisk() error {
 
 	return nil
 }
+
 // BatchPut 批量写入键值对
 func (db *DB) BatchPut(entries map[string][]byte) error {
-    startTime := time.Now()
-    
-    // 使用批量写入缓冲区
-    db.batchMutex.Lock()
-    defer db.batchMutex.Unlock()
-    
-    if !db.isOpen {
-        return ErrDBNotOpen
-    }
-    
-    // 预分配足够的空间
-    if cap(db.batchBuffer)-len(db.batchBuffer) < len(entries) {
-        newBuffer := make([]writeOp, len(db.batchBuffer), len(db.batchBuffer)+len(entries))
-        copy(newBuffer, db.batchBuffer)
-        db.batchBuffer = newBuffer
-    }
-    
-    // 添加所有条目到批量写入缓冲区
-    for key, value := range entries {
-        // 验证字符串是否为有效的UTF-8编码
-        if !utf8.Valid(value) {
-            return fmt.Errorf("invalid UTF-8 encoding for key: %s", key)
-        }
-        
-        // 存储值的副本，避免外部修改影响内部数据
-        valueCopy := make([]byte, len(value))
-        copy(valueCopy, value)
-        
-        // 添加到批量写入缓冲区
-        db.batchBuffer = append(db.batchBuffer, writeOp{key: key, value: valueCopy})
-        
-        // 更新统计信息
-        db.putOps++
-    }
-    
-    // 更新平均写入时间
-    elapsed := time.Since(startTime)
-    db.avgPutTime = time.Duration((int64(db.avgPutTime)*int64(db.putOps-len(entries)) + int64(elapsed)) / int64(db.putOps))
-    
-    // 如果缓冲区达到批量写入大小，执行批量写入
-    if len(db.batchBuffer) >= db.batchSize {
-        return db.flushBatch()
-    }
-    
-    return nil
+	startTime := time.Now()
+
+	// 使用批量写入缓冲区
+	db.batchMutex.Lock()
+	defer db.batchMutex.Unlock()
+
+	if !db.isOpen {
+		return ErrDBNotOpen
+	}
+
+	// 预分配足够的空间
+	if cap(db.batchBuffer)-len(db.batchBuffer) < len(entries) {
+		newBuffer := make([]writeOp, len(db.batchBuffer), len(db.batchBuffer)+len(entries))
+		copy(newBuffer, db.batchBuffer)
+		db.batchBuffer = newBuffer
+	}
+
+	// 添加所有条目到批量写入缓冲区
+	for key, value := range entries {
+		// 验证字符串是否为有效的UTF-8编码
+		if !utf8.Valid(value) {
+			return fmt.Errorf("invalid UTF-8 encoding for key: %s", key)
+		}
+
+		// 存储值的副本，避免外部修改影响内部数据
+		valueCopy := make([]byte, len(value))
+		copy(valueCopy, value)
+
+		// 添加到批量写入缓冲区
+		db.batchBuffer = append(db.batchBuffer, writeOp{key: key, value: valueCopy})
+
+		// 更新统计信息
+		db.putOps++
+	}
+
+	// 计算条目数量
+	entriesCount := int64(len(entries))
+
+	// 更新平均写入时间
+	elapsed := time.Since(startTime)
+	db.avgPutTime = time.Duration((int64(db.avgPutTime)*(db.putOps-entriesCount) + int64(elapsed)) / db.putOps)
+
+	// 如果缓冲区达到批量写入大小，执行批量写入
+	if len(db.batchBuffer) >= db.batchSize {
+		return db.flushBatch()
+	}
+
+	return nil
 }
 
 // BatchGet 批量获取键值对
 func (db *DB) BatchGet(keys []string) (map[string][]byte, error) {
-    startTime := time.Now()
-    
-    result := make(map[string][]byte, len(keys))
-    missingKeys := make([]string, 0)
-    
-    // 首先检查缓存
-    for _, key := range keys {
-        // 获取分片锁
-        shardID := db.getShardID(key)
-        db.shardMutexes[shardID].RLock()
-        
-        if !db.isOpen {
-            db.shardMutexes[shardID].RUnlock()
-            return nil, ErrDBNotOpen
-        }
-        
-        // 检查缓存
-        if value, ok := db.cache.Get(key); ok {
-            // 缓存命中
-            db.cacheHits++
-            
-            // 创建值的副本
-            valueCopy := make([]byte, len(value))
-            copy(valueCopy, value)
-            result[key] = valueCopy
-        } else {
-            // 缓存未命中
-            db.cacheMisses++
-            missingKeys = append(missingKeys, key)
-        }
-        
-        db.shardMutexes[shardID].RUnlock()
-    }
-    
-    // 然后从存储中获取缓存未命中的键
-    for _, key := range missingKeys {
-        // 获取分片锁
-        shardID := db.getShardID(key)
-        db.shardMutexes[shardID].RLock()
-        
-        // 从存储中获取
-        if value, ok := db.data[key]; ok {
-            // 创建值的副本
-            valueCopy := make([]byte, len(value))
-            copy(valueCopy, value)
-            result[key] = valueCopy
-            
-            // 更新缓存
-            db.cache.Add(key, value)
-        }
-        
-        db.shardMutexes[shardID].RUnlock()
-    }
-    
-    // 更新统计信息
-    db.getOps += int64(len(keys))
-    elapsed := time.Since(startTime)
-    db.avgGetTime = time.Duration((int64(db.avgGetTime)*int64(db.getOps-int64(len(keys))) + int64(elapsed)) / int64(db.getOps))
-    
-    return result, nil
+	startTime := time.Now()
+
+	result := make(map[string][]byte, len(keys))
+	missingKeys := make([]string, 0)
+
+	// 首先检查缓存
+	for _, key := range keys {
+		// 获取分片锁
+		shardID := db.getShardID(key)
+		db.shardMutexes[shardID].RLock()
+
+		if !db.isOpen {
+			db.shardMutexes[shardID].RUnlock()
+			return nil, ErrDBNotOpen
+		}
+
+		// 检查缓存
+		if value, ok := db.cache.Get(key); ok {
+			// 缓存命中
+			db.cacheHits++
+
+			// 创建值的副本
+			valueCopy := make([]byte, len(value))
+			copy(valueCopy, value)
+			result[key] = valueCopy
+		} else {
+			// 缓存未命中
+			db.cacheMisses++
+			missingKeys = append(missingKeys, key)
+		}
+
+		db.shardMutexes[shardID].RUnlock()
+	}
+
+	// 然后从存储中获取缓存未命中的键
+	for _, key := range missingKeys {
+		// 获取分片锁
+		shardID := db.getShardID(key)
+		db.shardMutexes[shardID].RLock()
+
+		// 从存储中获取
+		if value, ok := db.data[key]; ok {
+			// 创建值的副本
+			valueCopy := make([]byte, len(value))
+			copy(valueCopy, value)
+			result[key] = valueCopy
+
+			// 更新缓存
+			db.cache.Add(key, value)
+		}
+
+		db.shardMutexes[shardID].RUnlock()
+	}
+
+	// 更新统计信息
+	db.getOps += int64(len(keys))
+	elapsed := time.Since(startTime)
+	db.avgGetTime = time.Duration((int64(db.avgGetTime)*int64(db.getOps-int64(len(keys))) + int64(elapsed)) / int64(db.getOps))
+
+	return result, nil
 }

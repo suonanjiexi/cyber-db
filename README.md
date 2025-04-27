@@ -1,6 +1,7 @@
-# Cyber-DB 数据库
+# Cyber-DB
 
-一个用Go语言实现的去中心化高性能分布式关系型数据库系统。
+Cyber-DB 是一个用 Go 语言实现的去中心化高性能分布式关系型数据库系统。
+
 ## 主要特性
 
 - **高性能存储引擎**：自研高性能存储引擎，支持快速读写和高效存储
@@ -123,48 +124,92 @@
   - `index/`: 索引管理，提供高效的数据检索
   - `metrics/`: 性能指标收集和监控
   - `admin/`: 管理接口和工具
+  - `failover/`: 故障转移和节点健康监控
 - `examples/`: 示例代码
   - 包含客户端示例程序
   - 提供SQL使用示例
   - 分布式部署示例
   - 高级功能演示
 
+## 故障转移系统
+
+故障转移系统包含以下核心组件：
+
+1. **故障转移管理器** (`pkg/failover/failover_manager.go`) - 负责节点管理和故障转移流程
+2. **健康检查器** (`pkg/failover/health_checker.go`) - 负责监控节点健康状态
+
+### 功能特点
+
+- 节点健康状态自动监控
+- 根据 CPU、内存和磁盘使用率检测节点健康状况
+- 自动故障转移
+- 手动故障转移支持
+- 可配置的故障转移策略
+
 ## 快速开始
 
-1. 编译服务器：
+### 编译
+
 ```bash
 go build -o cyberdb ./cmd/cyberdb
 ```
 
-2. 运行服务器：
-```bash
-# 使用默认配置
-./cyberdb
+### 单节点启动
 
-# 或指定配置
-./cyberdb -host 127.0.0.1 -port 3306 -db ./mydata
+```bash
+./cyberdb -host localhost -port 3306 -db ./data
 ```
 
-3. 使用客户端连接：
-```bash
-# 编译并运行示例客户端
-go build -o client ./examples/client.go
-./client
+### 集群模式启动
 
-# 运行测试示例
-./client --test
-```
-4. 启动集群模式：
+启动种子节点:
 ```bash
-# 启动第一个节点（作为种子节点）
-./cyberdb -cluster-mode -node-id node1 -cluster-addr 127.0.0.1:7001
-
-# 启动其他节点并加入集群
-./cyberdb -cluster-mode -node-id node2 -cluster-addr 127.0.0.1:7002 -join 127.0.0.1:7001
-./cyberdb -cluster-mode -node-id node3 -cluster-addr 127.0.0.1:7003 -join 127.0.0.1:7001
+./cyberdb -cluster-mode -node-id node1 -cluster-addr 127.0.0.1:7001 -port 3306 -db ./data/node1
 ```
 
-更多详细信息和使用示例，请参考 `examples/README.md`。
+加入集群:
+```bash
+./cyberdb -cluster-mode -node-id node2 -cluster-addr 127.0.0.1:7002 -port 3307 -db ./data/node2 -join 127.0.0.1:7001
+```
+
+## 测试
+
+可以使用 telnet 连接到服务器测试：
+
+```bash
+telnet localhost 3306
+```
+
+## 配置参数
+
+| 参数名 | 说明 | 默认值 |
+|-----|-----|-----|
+| host | 服务器监听地址 | localhost |
+| port | 服务器监听端口 | 3306 |
+| db | 数据文件路径 | ./data |
+| cluster-mode | 是否启用集群模式 | false |
+| node-id | 节点ID（集群模式必须） | 无 |
+| cluster-addr | 集群通信地址（集群模式必须） | 无 |
+| join | 要加入的现有集群节点地址 | 无 |
+| auto-failover | 是否启用自动故障转移 | true |
+
+## 健康监控
+
+系统会监控以下指标来判断节点健康状态：
+
+- CPU 使用率
+- 内存使用率
+- 磁盘使用率
+
+当这些指标超过阈值时，节点将被标记为不健康状态。
+
+## 故障转移流程
+
+1. 健康检查器检测到节点连续失败
+2. 节点被标记为 DOWN 状态
+3. 如果启用了自动故障转移，会选择一个健康的副本节点
+4. 将选中的副本节点提升为新的主节点
+5. 更新集群配置
 
 ## 性能指标
 - 单节点模式下支持 10万+ QPS

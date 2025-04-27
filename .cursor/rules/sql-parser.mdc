@@ -1,0 +1,33 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# SQL解析器
+
+Cyber-DB 的 SQL 解析器负责将 SQL 查询语句解析为内部表示，便于系统处理和执行。
+
+## 核心文件
+
+- [pkg/parser/parser.go](mdc:pkg/parser/parser.go) - 主要解析器实现
+
+## 支持的 SQL 语句类型
+
+- SELECT - 数据查询，支持条件、排序、分组和聚合函数
+- INSERT - 数据插入
+- UPDATE - 数据更新
+- DELETE - 数据删除
+- CREATE TABLE - 创建表
+- CREATE INDEX - 创建索引
+- DROP INDEX - 删除索引
+
+## 功能特性
+
+- 支持 WHERE 条件过滤
+- 支持 GROUP BY 分组
+- 支持 ORDER BY 排序
+- 支持 LIMIT 和 OFFSET 分页
+- 支持聚合函数 (MAX, MIN, SUM, AVG)
+- 支持复合条件 (AND/OR/IN)
+- 支持唯一索引创建
+

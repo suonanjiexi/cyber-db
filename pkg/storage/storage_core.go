@@ -1,8 +1,7 @@
 package storage
 
 import (
-	"bufio"
-	"compress/gzip"
+	"bytes"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -170,7 +169,7 @@ func (db *DB) Close() error {
 // Get 获取键对应的值
 func (db *DB) Get(key string) ([]byte, error) {
 	startTime := time.Now()
-	
+
 	// 首先检查查询缓存
 	if value, ok := db.resultCache.Get(key); ok {
 		// 更新统计信息
@@ -193,14 +192,14 @@ func (db *DB) Get(key string) ([]byte, error) {
 		// 更新统计信息
 		db.cacheHits++
 		db.getOps++
-		
+
 		// 将结果添加到查询缓存
 		db.resultCache.Add(key, value)
-		
+
 		// 更新平均查询时间
 		elapsed := time.Since(startTime)
 		db.avgGetTime = time.Duration((int64(db.avgGetTime)*int64(db.getOps-1) + int64(elapsed)) / int64(db.getOps))
-		
+
 		return value, nil
 	}
 
@@ -216,11 +215,11 @@ func (db *DB) Get(key string) ([]byte, error) {
 	// 更新缓存
 	db.cache.Add(key, value)
 	db.resultCache.Add(key, value)
-	
+
 	// 更新统计信息
 	db.cacheMisses++
 	db.getOps++
-	
+
 	// 更新平均查询时间
 	elapsed := time.Since(startTime)
 	db.avgGetTime = time.Duration((int64(db.avgGetTime)*int64(db.getOps-1) + int64(elapsed)) / int64(db.getOps))
@@ -275,42 +274,42 @@ func (db *DB) preReadNearbyKeys(key string) {
 
 // Put 存储键值对
 func (db *DB) Put(key string, value []byte) error {
-    startTime := time.Now()
-    
-    // 验证字符串是否为有效的UTF-8MB4编码
-    if !utf8.Valid(value) {
-        return errors.New("invalid UTF-8 encoding")
-    }
+	startTime := time.Now()
 
-    // 使用批量写入缓冲区
-    db.batchMutex.Lock()
-    defer db.batchMutex.Unlock()
+	// 验证字符串是否为有效的UTF-8MB4编码
+	if !utf8.Valid(value) {
+		return errors.New("invalid UTF-8 encoding")
+	}
 
-    if !db.isOpen {
-        return ErrDBNotOpen
-    }
+	// 使用批量写入缓冲区
+	db.batchMutex.Lock()
+	defer db.batchMutex.Unlock()
 
-    // 存储值的副本，避免外部修改影响内部数据
-    valueCopy := make([]byte, len(value))
-    copy(valueCopy, value)
+	if !db.isOpen {
+		return ErrDBNotOpen
+	}
 
-    // 添加到批量写入缓冲区
-    db.batchBuffer = append(db.batchBuffer, writeOp{key: key, value: valueCopy})
-    
-    // 更新修改时间
-    db.modificationTimes[key] = time.Now()
+	// 存储值的副本，避免外部修改影响内部数据
+	valueCopy := make([]byte, len(value))
+	copy(valueCopy, value)
 
-    // 更新统计信息
-    db.putOps++
-    elapsed := time.Since(startTime)
-    db.avgPutTime = time.Duration((int64(db.avgPutTime)*int64(db.putOps-1) + int64(elapsed)) / int64(db.putOps))
+	// 添加到批量写入缓冲区
+	db.batchBuffer = append(db.batchBuffer, writeOp{key: key, value: valueCopy})
 
-    // 如果缓冲区达到批量写入大小，执行批量写入
-    if len(db.batchBuffer) >= db.batchSize {
-        return db.flushBatch()
-    }
+	// 更新修改时间
+	db.modificationTimes[key] = time.Now()
 
-    return nil
+	// 更新统计信息
+	db.putOps++
+	elapsed := time.Since(startTime)
+	db.avgPutTime = time.Duration((int64(db.avgPutTime)*int64(db.putOps-1) + int64(elapsed)) / int64(db.putOps))
+
+	// 如果缓冲区达到批量写入大小，执行批量写入
+	if len(db.batchBuffer) >= db.batchSize {
+		return db.flushBatch()
+	}
+
+	return nil
 }
 
 // Delete 删除键值对
@@ -326,11 +325,11 @@ func (db *DB) Delete(key string) error {
 
 	// 从数据存储中删除
 	delete(db.data, key)
-	
+
 	// 从缓存中删除
 	db.cache.Remove(key)
 	db.resultCache.Remove(key)
-	
+
 	// 更新统计信息
 	db.deleteOps++
 
@@ -453,7 +452,7 @@ func (db *DB) DeleteMulti(keys []string) error {
 	for _, key := range keys {
 		// 从数据存储中删除
 		delete(db.data, key)
-		
+
 		// 从缓存中删除
 		db.cache.Remove(key)
 		db.resultCache.Remove(key)

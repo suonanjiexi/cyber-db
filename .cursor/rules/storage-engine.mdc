@@ -1,0 +1,27 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 存储引擎
+
+Cyber-DB 的存储引擎模块负责数据的持久化存储、缓存管理和索引操作。
+
+## 核心文件
+
+- [pkg/storage/storage_core.go](mdc:pkg/storage/storage_core.go) - 数据库核心功能和初始化
+- [pkg/storage/storage_types.go](mdc:pkg/storage/storage_types.go) - 定义存储引擎的数据结构和类型
+- [pkg/storage/storage_batch.go](mdc:pkg/storage/storage_batch.go) - 批量写入和持久化实现
+- [pkg/storage/storage_index.go](mdc:pkg/storage/storage_index.go) - 索引相关功能
+- [pkg/storage/storage_stats.go](mdc:pkg/storage/storage_stats.go) - 存储引擎性能统计
+
+## 主要功能
+
+- 数据持久化保存与加载
+- LRU 缓存管理
+- 批处理写入优化
+- B+树索引实现
+- 哈希索引支持
+- 数据压缩
+- 自动故障恢复
+
