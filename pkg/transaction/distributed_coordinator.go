@@ -753,3 +753,21 @@ func (dc *DistributedCoordinator) RecoverTransaction(txID string) error {
 		return fmt.Errorf("未知的事务状态: %s", state)
 	}
 }
+
+// GetAllTransactions 获取所有事务
+func (dc *DistributedCoordinator) GetAllTransactions() []*DistributedTransaction {
+	dc.mutex.RLock()
+	defer dc.mutex.RUnlock()
+
+	transactions := make([]*DistributedTransaction, 0, len(dc.transactions))
+	for _, tx := range dc.transactions {
+		// 创建副本以避免并发修改
+		tx.mutex.RLock()
+		txCopy := *tx
+		tx.mutex.RUnlock()
+
+		transactions = append(transactions, &txCopy)
+	}
+
+	return transactions
+}

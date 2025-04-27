@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -24,7 +25,7 @@ func NewBTree(degree int) *BTree {
 
 	// 创建缓存
 	nodeCache, _ := lru.New[string, *BTreeNode](10000) // 增大缓存容量
-	
+
 	// 创建统计信息
 	stats := &TreeStats{
 		MinSearchTime: 0,
@@ -67,7 +68,7 @@ func (bt *BTree) findLeaf(key string) *BTreeNode {
 	for !node.IsLeaf {
 		// 获取节点级读锁
 		node.mutex.RLock()
-		
+
 		// 记录路径
 		path = append(path, node)
 
@@ -96,7 +97,7 @@ func (bt *BTree) findLeaf(key string) *BTreeNode {
 
 		// 获取下一个节点
 		nextNode := node.Children[pos]
-		
+
 		// 预取相邻节点（如果可能是下一个查询目标）
 		if bt.NodeCache != nil && pos+1 < len(node.Children) {
 			go func(prefetchNode *BTreeNode) {
@@ -104,7 +105,7 @@ func (bt *BTree) findLeaf(key string) *BTreeNode {
 				bt.NodeCache.Add(prefetchCacheKey, prefetchNode)
 			}(node.Children[pos+1])
 		}
-		
+
 		node.mutex.RUnlock()
 		node = nextNode
 	}
@@ -114,7 +115,7 @@ func (bt *BTree) findLeaf(key string) *BTreeNode {
 		// 缓存叶子节点
 		cacheKey := "node:" + key
 		bt.NodeCache.Add(cacheKey, node)
-		
+
 		// 缓存路径上的节点，使用节点指针作为部分键
 		for i, pathNode := range path {
 			pathCacheKey := fmt.Sprintf("path:%s:%d", key, i)
@@ -150,7 +151,7 @@ func (bt *BTree) Search(key string) *SearchResult {
 
 	// 查找叶子节点
 	leaf := bt.findLeaf(key)
-	
+
 	// 获取节点读锁
 	leaf.mutex.RLock()
 	defer leaf.mutex.RUnlock()
@@ -182,34 +183,34 @@ func (bt *BTree) RangeSearch(startKey, endKey string) [][]string {
 
 	// 查找起始叶子节点
 	leaf := bt.findLeaf(startKey)
-	
+
 	// 结果集
 	var results [][]string
-	
+
 	// 遍历叶子节点链表
 	for leaf != nil {
 		leaf.mutex.RLock()
-		
+
 		// 在当前叶子节点中查找符合范围的键
 		for i, key := range leaf.Keys {
 			if key >= startKey && (endKey == "" || key <= endKey) {
 				results = append(results, leaf.Values[i])
 			}
-			
+
 			// 如果已经超过结束键，提前结束
 			if endKey != "" && key > endKey {
 				leaf.mutex.RUnlock()
 				return results
 			}
 		}
-		
+
 		// 获取下一个叶子节点
 		nextLeaf := leaf.Next
 		leaf.mutex.RUnlock()
-		
+
 		// 移动到下一个叶子节点
 		leaf = nextLeaf
 	}
-	
+
 	return results
 }

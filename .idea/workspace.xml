@@ -4,13 +4,36 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="62e2f0ee-2eb7-444b-b288-d6a485814e29" name="更改" comment="init" />
+    <list default="true" id="62e2f0ee-2eb7-444b-b288-d6a485814e29" name="更改" comment="init">
+      <change afterPath="$PROJECT_DIR$/cyberdb.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmd/cyberdb/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/cyberdb/main.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/doc/failover_design.md" beforeDir="false" afterPath="$PROJECT_DIR$/failover_design.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/cluster/client.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/cluster/client.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_core.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/storage/btree/btree_core.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_delete.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/storage/btree/btree_delete.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_insert.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/storage/btree/btree_insert.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_split.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_stats.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/storage/btree/btree_stats.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_types.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/storage/btree/btree_types.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/btree/btree_utils.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/storage/btree/btree_utils.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_adaptive.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_btree.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_hash.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_manager.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_operations.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_range.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/storage/index/index_types.go" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/transaction/distributed_coordinator.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/transaction/distributed_coordinator.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/transaction/tcc_coordinator.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/transaction/tcc_coordinator.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/transaction/transaction_monitor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/transaction/transaction_monitor.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/transaction/transaction_types.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/transaction/transaction_types.go" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
-  <component name="GOROOT" url="file:///usr/local/go" />
+  <component name="GOROOT" url="file://$PROJECT_DIR$/../../Program Files/Go" />
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
@@ -31,6 +54,9 @@
     &quot;accountId&quot;: &quot;5441b798-caea-45ad-ba79-495a76d68cbd&quot;
   }
 }</component>
+  <component name="MacroExpansionManager">
+    <option name="directoryName" value="Xbs0x41y" />
+  </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 4
 }</component>
@@ -41,23 +67,33 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "Go 构建.go build github.com/suonanjiexi/cyber-db/cmd/cyberdb.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.go.formatter.settings.were.checked": "true",
     "RunOnceActivity.go.migrated.go.modules.settings": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "dart.analysis.tool.window.visible": "false",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "fix-duplicate-functions",
     "go.import.settings.migrated": "true",
     "go.sdk.automatically.set": "true",
     "kotlin-language-version-configured": "true",
-    "last_opened_file_path": "/Users/suonanjiexi/IdeaProjects/go-data",
+    "last_opened_file_path": "D:/IdeaProjects/cyber-db",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "org.rust.cargo.project.model.impl.CargoExternalSystemProjectAware.subscribe.first.balloon": "",
     "show.migrate.to.gradle.popup": "false",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="D:\IdeaProjects\cyber-db\cmd\cyberdb" />
+    </key>
+  </component>
   <component name="RunManager">
     <configuration default="true" type="GoApplicationRunConfiguration" factoryName="Go Application">
       <module name="go-data" />
@@ -66,6 +102,15 @@
       <kind value="FILE" />
       <directory value="$PROJECT_DIR$" />
       <filePath value="$PROJECT_DIR$" />
+      <method v="2" />
+    </configuration>
+    <configuration name="go build github.com/suonanjiexi/cyber-db/cmd/cyberdb" type="GoApplicationRunConfiguration" factoryName="Go Application" temporary="true" nameIsGenerated="true">
+      <module name="go-data" />
+      <working_directory value="$PROJECT_DIR$" />
+      <kind value="PACKAGE" />
+      <package value="github.com/suonanjiexi/cyber-db/cmd/cyberdb" />
+      <directory value="$PROJECT_DIR$" />
+      <filePath value="$PROJECT_DIR$/cmd/cyberdb/main.go" />
       <method v="2" />
     </configuration>
     <configuration default="true" type="GoTestRunConfiguration" factoryName="Go Test">
@@ -87,6 +132,11 @@
       <option name="filePath" />
       <method v="2" />
     </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Go 构建.go build github.com/suonanjiexi/cyber-db/cmd/cyberdb" />
+      </list>
+    </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -113,6 +163,7 @@
       <workItem from="1741111139235" duration="226000" />
       <workItem from="1741111396942" duration="180000" />
       <workItem from="1745733705435" duration="11000" />
+      <workItem from="1745745030888" duration="1069000" />
     </task>
     <task id="LOCAL-00001" summary="init">
       <option name="closed" value="true" />

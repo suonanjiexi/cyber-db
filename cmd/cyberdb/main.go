@@ -11,6 +11,7 @@ import (
 
 	"github.com/suonanjiexi/cyber-db/pkg/failover"
 	"github.com/suonanjiexi/cyber-db/pkg/server"
+	"github.com/suonanjiexi/cyber-db/pkg/storage"
 )
 
 func main() {
@@ -24,6 +25,8 @@ func main() {
 		clusterAddr        string
 		joinAddr           string
 		enableAutoFailover bool
+		maxConnections     int
+		charset            string
 	)
 
 	// 解析命令行参数
@@ -35,6 +38,8 @@ func main() {
 	flag.StringVar(&clusterAddr, "cluster-addr", "", "集群通信地址，格式为host:port")
 	flag.StringVar(&joinAddr, "join", "", "要加入的集群节点地址")
 	flag.BoolVar(&enableAutoFailover, "auto-failover", true, "是否启用自动故障转移")
+	flag.IntVar(&maxConnections, "max-connections", 100, "最大连接数")
+	flag.StringVar(&charset, "charset", "utf8mb4", "字符集")
 	flag.Parse()
 
 	// 验证参数
@@ -118,13 +123,34 @@ func main() {
 		log.Println("健康检查器已启动")
 	}
 
-	// 初始化服务器（使用简化版服务器）
-	srv := server.NewSimpleServer(host, port, dataDir)
+	// 初始化存储引擎
+	db := storage.NewDB(dataDir, true)
+	if err := db.Open(); err != nil {
+		log.Fatalf("存储引擎启动失败: %v", err)
+	}
+	defer func(db *storage.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Printf("存储引擎关闭出错: %v", err)
+		}
+	}(db)
+
+	// 初始化服务器（使用完整版服务器）
+	srv := server.NewServer(host, port, db)
+	srv.SetMaxConnections(maxConnections)
+
+	// 设置连接超时和查询超时
+	srv.SetConnTimeout(5 * time.Minute)
+	srv.SetQueryTimeout(30 * time.Second)
+
 	go func() {
 		if err := srv.Start(); err != nil {
 			log.Fatalf("服务器启动失败: %v", err)
 		}
 	}()
+
+	log.Printf("CyberDB 服务器已启动，监听地址: %s:%d\n", host, port)
+	log.Printf("现在可以使用SQL客户端（如Navicat）连接到服务器\n")
 
 	// 等待信号退出
 	sigCh := make(chan os.Signal, 1)

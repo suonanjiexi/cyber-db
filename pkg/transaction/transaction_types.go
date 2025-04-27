@@ -92,12 +92,6 @@ type ManagerStats struct {
 	mutex         sync.Mutex    // 统计信息锁
 }
 
-// DeadlockDetector 死锁检测器
-type DeadlockDetector struct {
-	waitForGraph map[string]map[string]struct{} // 等待图：txID -> 等待的事务ID集合
-	mutex        sync.Mutex                     // 互斥锁
-}
-
 // LockType 锁类型
 type LockType int
 

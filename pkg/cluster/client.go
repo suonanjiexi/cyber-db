@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"net/rpc"
 	"sync"
@@ -78,6 +79,27 @@ func (c *Client) CloseConnections() {
 // Call 在指定节点上调用RPC方法
 func (nc *NodeConnection) Call(method string, request interface{}, response interface{}) error {
 	return nc.client.Call(method, request, response)
+}
+
+// Try 发送Try请求
+func (nc *NodeConnection) Try(ctx context.Context, request interface{}) (interface{}, error) {
+	response := &struct{ Success bool }{}
+	err := nc.client.Call("TCC.Try", request, response)
+	return response, err
+}
+
+// Confirm 发送Confirm请求
+func (nc *NodeConnection) Confirm(ctx context.Context, request interface{}) (interface{}, error) {
+	response := &struct{ Success bool }{}
+	err := nc.client.Call("TCC.Confirm", request, response)
+	return response, err
+}
+
+// Cancel 发送Cancel请求
+func (nc *NodeConnection) Cancel(ctx context.Context, request interface{}) (interface{}, error) {
+	response := &struct{ Success bool }{}
+	err := nc.client.Call("TCC.Cancel", request, response)
+	return response, err
 }
 
 // Close 关闭节点连接
