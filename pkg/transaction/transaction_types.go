@@ -2,11 +2,12 @@ package transaction
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
-	"github.com/suonanjiexi/cyber-db/pkg/storage"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/suonanjiexi/cyber-db/pkg/storage"
 )
 
 // 定义错误类型
@@ -17,14 +18,14 @@ var (
 	ErrDeadlock    = errors.New("transaction deadlock detected")
 )
 
-// 事务状态
+// 事务状态常量
 const (
 	TxStatusActive = iota
 	TxStatusCommitted
 	TxStatusAborted
 )
 
-// 事务隔离级别
+// 事务隔离级别常量
 const (
 	ReadUncommitted = iota
 	ReadCommitted
@@ -74,6 +75,10 @@ type Manager struct {
 	shardMutexes       []sync.RWMutex             // 分片锁数组
 	deadlockDetector   *DeadlockDetector          // 死锁检测器
 	resultCache        *lru.Cache[string, []byte] // 查询结果缓存
+	monitorTicker      *time.Ticker               // 监控定时器
+	slowTxThreshold    time.Duration              // 慢事务阈值
+	activeAlerts       map[string]time.Time       // 活跃告警
+	alertMutex         sync.Mutex                 // 告警互斥锁
 }
 
 // ManagerStats 事务管理器统计信息
@@ -91,4 +96,80 @@ type ManagerStats struct {
 type DeadlockDetector struct {
 	waitForGraph map[string]map[string]struct{} // 等待图：txID -> 等待的事务ID集合
 	mutex        sync.Mutex                     // 互斥锁
+}
+
+// LockType 锁类型
+type LockType int
+
+const (
+	ReadLock LockType = iota
+	WriteLock
+)
+
+// LockManager 负责管理事务锁
+type LockManager struct {
+	locks        map[string]*LockEntry          // 键 -> 锁条目
+	waitForGraph map[string]map[string]struct{} // 等待图，用于死锁检测
+	mutex        sync.Mutex                     // 互斥锁
+	timeout      time.Duration                  // 锁超时时间
+}
+
+// LockEntry 表示单个资源上的锁
+type LockEntry struct {
+	key         string              // 被锁定的键
+	readLocks   map[string]struct{} // 持有读锁的事务ID
+	writeLock   string              // 持有写锁的事务ID (空表示无写锁)
+	waitingList []*LockRequest      // 等待此锁的请求队列
+	mutex       sync.Mutex          // 保护此锁条目的互斥锁
+	// 兼容旧代码的字段
+	Type      LockType  // 锁类型
+	Holder    string    // 持有锁的事务ID
+	WaitQueue []string  // 等待队列（事务ID列表）
+	Timestamp time.Time // 获取锁的时间戳
+}
+
+// LockRequest 表示锁请求
+type LockRequest struct {
+	TxID        string    // 事务ID
+	Key         string    // 请求锁定的键
+	Type        LockType  // 锁类型
+	Deadline    time.Time // 请求超时时间
+	grantedChan chan bool // 通知锁授予的通道
+	startTime   time.Time // 请求开始时间
+}
+
+// TransactionManager 是Manager的别名，用于兼容现有代码
+type TransactionManager = Manager
+
+// 分布式事务协议类型
+type TransactionProtocol int
+
+const (
+	// TwoPhaseCommit 两阶段提交协议
+	TwoPhaseCommit TransactionProtocol = iota
+	// ThreePhaseCommit 三阶段提交协议
+	ThreePhaseCommit
+)
+
+// TransactionState 事务状态
+type TransactionState string
+
+const (
+	// 两阶段提交状态
+	TxInitial    TransactionState = "initial"
+	TxPreparing  TransactionState = "preparing"
+	TxPrepared   TransactionState = "prepared"
+	TxCommitting TransactionState = "committing"
+	TxCommitted  TransactionState = "committed"
+	TxAborting   TransactionState = "aborting"
+	TxAborted    TransactionState = "aborted"
+
+	// 三阶段提交额外状态
+	TxCanCommit TransactionState = "can_commit"
+	TxPreCommit TransactionState = "pre_commit"
+)
+
+// generateTxID 生成事务ID
+func generateTxID() string {
+	return fmt.Sprintf("tx-%d-%d", time.Now().UnixNano(), time.Now().Unix()%1000)
 }

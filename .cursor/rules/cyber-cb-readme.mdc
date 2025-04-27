@@ -1,3 +1,8 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
 # Cyber-DB
 
 Cyber-DB 是一个用 Go 语言实现的去中心化高性能分布式关系型数据库系统。
@@ -240,3 +245,4 @@ telnet localhost 3306
 
 ## 许可证
 本项目采用 MIT 许可证。详情请参阅 LICENSE 文件。
+

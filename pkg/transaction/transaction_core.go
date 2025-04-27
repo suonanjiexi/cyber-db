@@ -9,39 +9,39 @@ import (
 
 // Commit 提交事务
 func (tx *Transaction) Commit() error {
-    tx.mutex.Lock()
-    defer tx.mutex.Unlock()
+	tx.mutex.Lock()
+	defer tx.mutex.Unlock()
 
-    // 检查事务状态
-    if tx.status != TxStatusActive {
-        return ErrTxNotActive
-    }
+	// 检查事务状态
+	if tx.status != TxStatusActive {
+		return ErrTxNotActive
+	}
 
-    // 检查事务是否超时
-    if time.Since(tx.startTime) > tx.timeout {
-        tx.status = TxStatusAborted
-        return ErrTxTimeout
-    }
+	// 检查事务是否超时
+	if time.Since(tx.startTime) > tx.timeout {
+		tx.status = TxStatusAborted
+		return ErrTxTimeout
+	}
 
-    // 将写集合应用到数据库
-    for key, value := range tx.writeSet {
-        var err error
-        if value == nil {
-            // 删除操作
-            err = tx.db.Delete(key)
-        } else {
-            // 写入操作
-            err = tx.db.Put(key, value)
-        }
-        
-        if err != nil {
-            tx.status = TxStatusAborted
-            return fmt.Errorf("提交事务失败: %w", err)
-        }
-    }
+	// 将写集合应用到数据库
+	for key, value := range tx.writeSet {
+		var err error
+		if value == nil {
+			// 删除操作
+			err = tx.db.Delete(key)
+		} else {
+			// 写入操作
+			err = tx.db.Put(key, value)
+		}
 
-    tx.status = TxStatusCommitted
-    return nil
+		if err != nil {
+			tx.status = TxStatusAborted
+			return fmt.Errorf("提交事务失败: %w", err)
+		}
+	}
+
+	tx.status = TxStatusCommitted
+	return nil
 }
 
 // Rollback 回滚事务
@@ -135,12 +135,6 @@ func (tx *Transaction) Delete(key string) error {
 	// 将空值添加到写集合，表示删除
 	tx.writeSet[key] = nil
 	return nil
-}
-
-// 生成唯一事务ID
-func generateTxID() string {
-	// 使用时间戳和随机数生成更唯一的ID
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix()%1000)
 }
 
 // Status 返回事务的当前状态
