@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log"
@@ -20,45 +21,118 @@ import (
 	"github.com/suonanjiexi/cyber-db/pkg/transaction"
 )
 
+// 客户端能力标志
+const (
+	CLIENT_LONG_PASSWORD                  uint32 = 1
+	CLIENT_FOUND_ROWS                     uint32 = 2
+	CLIENT_LONG_FLAG                      uint32 = 4
+	CLIENT_CONNECT_WITH_DB                uint32 = 8
+	CLIENT_NO_SCHEMA                      uint32 = 16
+	CLIENT_COMPRESS                       uint32 = 32
+	CLIENT_ODBC                           uint32 = 64
+	CLIENT_LOCAL_FILES                    uint32 = 128
+	CLIENT_IGNORE_SPACE                   uint32 = 256
+	CLIENT_PROTOCOL_41                    uint32 = 512
+	CLIENT_INTERACTIVE                    uint32 = 1024
+	CLIENT_SSL                            uint32 = 2048
+	CLIENT_IGNORE_SIGPIPE                 uint32 = 4096
+	CLIENT_TRANSACTIONS                   uint32 = 8192
+	CLIENT_RESERVED                       uint32 = 16384
+	CLIENT_SECURE_CONNECTION              uint32 = 32768
+	CLIENT_MULTI_STATEMENTS               uint32 = 65536
+	CLIENT_MULTI_RESULTS                  uint32 = 131072
+	CLIENT_PS_MULTI_RESULTS               uint32 = 262144
+	CLIENT_PLUGIN_AUTH                    uint32 = 524288
+	CLIENT_CONNECT_ATTRS                  uint32 = 1048576
+	CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA uint32 = 2097152
+	CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   uint32 = 4194304
+	CLIENT_SESSION_TRACK                  uint32 = 8388608
+	CLIENT_DEPRECATE_EOF                  uint32 = 16777216
+)
+
 // Server 表示数据库服务器
 type Server struct {
-	host           string
-	port           int
-	db             *storage.DB
-	txManager      *transaction.Manager
-	parser         *parser.Parser
-	listener       net.Listener
-	mutex          sync.RWMutex
-	running        bool
-	conns          map[string]net.Conn // 跟踪活跃连接
-	connMutex      sync.Mutex          // 连接映射的互斥锁
-	charset        string              // 字符集编码
-	connTimeout    time.Duration       // 连接超时时间
-	queryTimeout   time.Duration       // 查询超时时间
-	maxConnections int                 // 最大连接数
-	activeQueries  int32               // 当前活跃查询数
-	metrics        map[string]int64    // 性能指标统计
-	metricsMutex   sync.Mutex          // 指标互斥锁
-	wg             sync.WaitGroup      // 等待组，用于等待所有连接处理完毕
+	host               string
+	port               int
+	db                 *storage.DB
+	txManager          *transaction.Manager
+	parser             *parser.Parser
+	listener           net.Listener
+	mutex              sync.RWMutex
+	running            bool
+	conns              map[string]net.Conn // 跟踪活跃连接
+	connMutex          sync.Mutex          // 连接映射的互斥锁
+	charset            string              // 字符集编码
+	connTimeout        time.Duration       // 连接超时时间
+	queryTimeout       time.Duration       // 查询超时时间
+	maxConnections     int                 // 最大连接数
+	activeQueries      int32               // 当前活跃查询数
+	metrics            map[string]int64    // 性能指标统计
+	metricsMutex       sync.Mutex          // 指标互斥锁
+	wg                 sync.WaitGroup      // 等待组，用于等待所有连接处理完毕
+	nextConnectionID   uint32              // 连接ID生成器
+	serverCapabilities uint32              // 服务器能力标志
+	serverVersion      string              // 服务器版本
+	authPluginName     string              // 认证插件名
+}
+
+// Connection 表示一个客户端连接的状态
+type Connection struct {
+	ID           uint32            // 连接ID
+	Username     string            // 用户名
+	Database     string            // 数据库名
+	Addr         string            // 客户端地址
+	Challenge    []byte            // 认证挑战
+	Capabilities uint32            // 客户端能力标志
+	Charset      byte              // 字符集
+	Status       uint16            // 连接状态
+	TxStartTime  time.Time         // 事务开始时间
+	LastCmdTime  time.Time         // 最后一次命令时间
+	Attrs        map[string]string // 连接属性
+	SequenceID   byte              // 当前包序列号
 }
 
 // NewServer 创建一个新的数据库服务器
 func NewServer(host string, port int, db *storage.DB) *Server {
 	txManager := transaction.NewManager(db, 30*time.Second) // 默认30秒超时
+
+	// 服务器能力标志
+	capabilities := CLIENT_LONG_PASSWORD |
+		CLIENT_FOUND_ROWS |
+		CLIENT_LONG_FLAG |
+		CLIENT_CONNECT_WITH_DB |
+		CLIENT_ODBC |
+		CLIENT_IGNORE_SPACE |
+		CLIENT_PROTOCOL_41 |
+		CLIENT_INTERACTIVE |
+		CLIENT_IGNORE_SIGPIPE |
+		CLIENT_TRANSACTIONS |
+		CLIENT_SECURE_CONNECTION |
+		CLIENT_MULTI_STATEMENTS |
+		CLIENT_MULTI_RESULTS |
+		CLIENT_PS_MULTI_RESULTS |
+		CLIENT_PLUGIN_AUTH |
+		CLIENT_CONNECT_ATTRS |
+		CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
+
 	return &Server{
-		host:           host,
-		port:           port,
-		db:             db,
-		txManager:      txManager,
-		parser:         parser.NewParser(),
-		running:        false,
-		conns:          make(map[string]net.Conn),
-		charset:        "utf8mb4",        // 默认使用utf8mb4字符集
-		connTimeout:    5 * time.Minute,  // 默认连接超时时间
-		queryTimeout:   30 * time.Second, // 默认查询超时时间
-		maxConnections: 100,              // 默认最大连接数
-		activeQueries:  0,
-		metrics:        make(map[string]int64),
+		host:               host,
+		port:               port,
+		db:                 db,
+		txManager:          txManager,
+		parser:             parser.NewParser(),
+		running:            false,
+		conns:              make(map[string]net.Conn),
+		charset:            "utf8mb4",        // 默认使用utf8mb4字符集
+		connTimeout:        5 * time.Minute,  // 默认连接超时时间
+		queryTimeout:       30 * time.Second, // 默认查询超时时间
+		maxConnections:     100,              // 默认最大连接数
+		activeQueries:      0,
+		metrics:            make(map[string]int64),
+		nextConnectionID:   1,                       // 初始连接ID为1
+		serverCapabilities: capabilities,            // 服务器能力标志
+		serverVersion:      "8.0.31",                // MySQL 8.0版本
+		authPluginName:     "mysql_native_password", // 使用原生密码认证
 	}
 }
 
@@ -294,122 +368,370 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 // 发送MySQL握手包
 func (s *Server) sendMySQLHandshake(conn net.Conn) error {
-	// 简化版MySQL握手包
-	handshake := []byte{
-		10,                              // 协议版本
-		'5', '.', '7', '.', '2', '5', 0, // 服务器版本
-		1, 0, 0, 0, // 连接ID (简化为1)
-		'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', // 认证插件数据前8字节
-		0,    // 填充
-		8, 0, // 服务器能力标志低位
-		33,   // 字符集 (utf8_general_ci)
-		2, 0, // 服务器状态
-		8, 0, // 服务器能力标志高位
-		21,                           // 认证数据长度
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 保留10字节0
-		'I', 'J', 'K', 'L', 'M', // 认证插件数据剩余部分
-		'm', 'y', 's', 'q', 'l', '_', 'n', 'a', 't', 'i', 'v', 'e', '_', 'p', 'a', 's', 's', 'w', 'o', 'r', 'd', 0, // 认证插件名
+	// 生成随机挑战(auth plugin data)
+	challenge := make([]byte, 20)
+	if _, err := rand.Read(challenge); err != nil {
+		return fmt.Errorf("生成挑战失败: %v", err)
 	}
 
+	// 避免0字节，可能导致字符串解析问题
+	for i := 0; i < len(challenge); i++ {
+		if challenge[i] == 0 {
+			challenge[i] = '0'
+		}
+	}
+
+	// 保存认证挑战，便于后续认证时使用
+	conn.(*net.TCPConn).SetNoDelay(true) // 禁用Nagle算法提高响应速度
+
+	// 分配新的连接ID
+	connID := atomic.AddUint32(&s.nextConnectionID, 1)
+
+	// 构建MySQL 8.0握手包
+	// 参考: https://dev.mysql.com/doc/internals/en/connection-phase-packets.html
+
+	// 首先准备握手包体
+	buff := &bytes.Buffer{}
+
+	// 1. 协议版本 (1 byte) - 总是 10
+	buff.WriteByte(10)
+
+	// 2. 服务器版本 (NUL结尾)
+	buff.WriteString(s.serverVersion)
+	buff.WriteByte(0)
+
+	// 3. 线程ID/连接ID (4 bytes)
+	buff.WriteByte(byte(connID))
+	buff.WriteByte(byte(connID >> 8))
+	buff.WriteByte(byte(connID >> 16))
+	buff.WriteByte(byte(connID >> 24))
+
+	// 4. 认证挑战的前8字节
+	buff.Write(challenge[:8])
+
+	// 5. 填充字节 (1 byte)
+	buff.WriteByte(0)
+
+	// 6. 能力标志低16位 (2 bytes)
+	capabilityFlags := uint32(
+		CLIENT_LONG_PASSWORD |
+			CLIENT_FOUND_ROWS |
+			CLIENT_LONG_FLAG |
+			CLIENT_CONNECT_WITH_DB |
+			CLIENT_PLUGIN_AUTH |
+			CLIENT_PROTOCOL_41 |
+			CLIENT_TRANSACTIONS |
+			CLIENT_SECURE_CONNECTION |
+			CLIENT_MULTI_STATEMENTS |
+			CLIENT_MULTI_RESULTS |
+			CLIENT_PS_MULTI_RESULTS |
+			CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)
+
+	buff.WriteByte(byte(capabilityFlags))
+	buff.WriteByte(byte(capabilityFlags >> 8))
+
+	// 7. 字符集 (1 byte) - utf8mb4_general_ci = 45
+	buff.WriteByte(45)
+
+	// 8. 服务器状态 (2 bytes) - 自动提交
+	buff.WriteByte(2)
+	buff.WriteByte(0)
+
+	// 9. 能力标志高16位 (2 bytes)
+	buff.WriteByte(byte(capabilityFlags >> 16))
+	buff.WriteByte(byte(capabilityFlags >> 24))
+
+	// 10. 认证数据长度 (1 byte) - 如果有CLIENT_PLUGIN_AUTH，这里必须是21
+	buff.WriteByte(21)
+
+	// 11. 保留字节 (10 bytes) - 全部为0
+	buff.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	// 12. 认证挑战的剩余部分 (至少12字节) + NULL终止符
+	buff.Write(challenge[8:])
+	buff.WriteByte(0)
+
+	// 13. 认证插件名称 (NUL结尾)
+	buff.WriteString("mysql_native_password")
+	buff.WriteByte(0)
+
+	handshake := buff.Bytes()
+
+	// 记录挑战数据到日志，便于调试
+	log.Printf("认证挑战: %x", challenge)
+
+	// 构建MySQL包头 (4字节)
+	// 长度 (3字节) + 序列号 (1字节)
+	packetLen := len(handshake)
 	header := []byte{
-		byte(len(handshake)),
-		0,
-		0,
-		0,
+		byte(packetLen),
+		byte(packetLen >> 8),
+		byte(packetLen >> 16),
+		0, // 包序号 - 握手包总是序号0
 	}
 
+	// 发送握手包
 	if _, err := conn.Write(header); err != nil {
-		return err
+		return fmt.Errorf("写入握手包头失败: %v", err)
 	}
 	if _, err := conn.Write(handshake); err != nil {
-		return err
+		return fmt.Errorf("写入握手包体失败: %v", err)
 	}
 
+	log.Printf("发送MySQL 8.0握手包 - 连接ID: %d, 包长度: %d", connID, packetLen)
 	return nil
 }
 
 // 处理客户端认证
 func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
+	// 创建连接上下文
+	connCtx := &Connection{
+		ID:          atomic.LoadUint32(&s.nextConnectionID),
+		Addr:        conn.RemoteAddr().String(),
+		LastCmdTime: time.Now(),
+		Attrs:       make(map[string]string),
+		SequenceID:  1, // 预期客户端认证包序列号为1
+	}
+
 	// 读取认证包
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return "", err
+		return "", fmt.Errorf("读取认证包头失败: %v", err)
 	}
 
 	packetLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+	sequenceID := header[3]
+
+	if sequenceID != connCtx.SequenceID {
+		log.Printf("警告: 预期序列号 %d，收到 %d", connCtx.SequenceID, sequenceID)
+	}
+
 	authData := make([]byte, packetLen)
 	if _, err := io.ReadFull(conn, authData); err != nil {
-		return "", err
+		return "", fmt.Errorf("读取认证包体失败: %v", err)
 	}
 
-	// 提取用户名
-	// MySQL认证包格式: [capability_flags(4)][max_packet_size(4)][charset(1)][reserved(23)][username][NUL][auth_response]
-	// 简化处理，仅提取用户名
-	usernameEnd := bytes.IndexByte(authData[32:], 0)
+	// 解析客户端能力标志
+	if packetLen < 4 {
+		return "", fmt.Errorf("认证包太短")
+	}
+
+	clientCapabilities := uint32(authData[0]) |
+		uint32(authData[1])<<8 |
+		uint32(authData[2])<<16 |
+		uint32(authData[3])<<24
+
+	connCtx.Capabilities = clientCapabilities
+
+	// 记录客户端能力标志
+	log.Printf("客户端能力标志: 0x%08x", clientCapabilities)
+
+	// 检查客户端是否支持协议41
+	if (clientCapabilities & CLIENT_PROTOCOL_41) == 0 {
+		return "", fmt.Errorf("客户端不支持必须的协议版本(CLIENT_PROTOCOL_41)")
+	}
+
+	// 解析MySQL 8.0认证包
+	var pos int = 4 // 能力标志后的位置
+
+	// 最大包大小 (4字节)
+	if packetLen < pos+4 {
+		return "", fmt.Errorf("无效的认证包: 太短")
+	}
+	maxPacketSize := uint32(authData[pos]) |
+		uint32(authData[pos+1])<<8 |
+		uint32(authData[pos+2])<<16 |
+		uint32(authData[pos+3])<<24
+	pos += 4
+
+	// 字符集 (1字节)
+	if packetLen < pos+1 {
+		return "", fmt.Errorf("无效的认证包: 太短")
+	}
+	connCtx.Charset = authData[pos]
+	pos += 1
+
+	// 跳过保留字节 (23字节)
+	if packetLen < pos+23 {
+		return "", fmt.Errorf("无效的认证包: 太短")
+	}
+	pos += 23
+
+	// 用户名 (NUL结尾)
+	usernameEnd := bytes.IndexByte(authData[pos:], 0)
 	if usernameEnd == -1 {
-		return "", fmt.Errorf("无效的认证包")
+		return "", fmt.Errorf("无效的认证包: 未找到用户名终止符")
 	}
 
-	username := string(authData[32 : 32+usernameEnd])
+	connCtx.Username = string(authData[pos : pos+usernameEnd])
+	pos += usernameEnd + 1
 
-	// 在实际应用中，这里应该验证用户名和密码
-	// 为简化示例，我们接受任何用户名
+	log.Printf("客户端认证: 用户=%s, 字符集=%d, 最大包大小=%d",
+		connCtx.Username, connCtx.Charset, maxPacketSize)
 
-	return username, nil
+	// 处理认证响应
+	if (clientCapabilities & CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) != 0 {
+		// 变长长度编码
+		if packetLen <= pos {
+			return "", fmt.Errorf("无效的认证包: 太短，无法读取认证数据长度")
+		}
+
+		authLen := int(authData[pos])
+		pos += 1
+
+		if packetLen < pos+authLen {
+			return "", fmt.Errorf("无效的认证包: 太短，无法读取完整认证数据")
+		}
+
+		// 跳过认证响应数据
+		pos += authLen
+	} else if (clientCapabilities & CLIENT_SECURE_CONNECTION) != 0 {
+		// 固定长度认证响应，前导字节指示长度
+		if packetLen <= pos {
+			return "", fmt.Errorf("无效的认证包: 太短，无法读取认证数据长度")
+		}
+
+		authLen := int(authData[pos])
+		pos += 1
+
+		if packetLen < pos+authLen {
+			return "", fmt.Errorf("无效的认证包: 太短，无法读取完整认证数据")
+		}
+
+		// 跳过认证响应数据
+		pos += authLen
+	} else {
+		// 旧的认证方式 (NUL结尾)
+		authEnd := bytes.IndexByte(authData[pos:], 0)
+		if authEnd != -1 {
+			pos += authEnd + 1
+		}
+	}
+
+	// 检查数据库名
+	if (clientCapabilities&CLIENT_CONNECT_WITH_DB) != 0 && pos < packetLen {
+		dbNameEnd := bytes.IndexByte(authData[pos:], 0)
+		if dbNameEnd != -1 {
+			connCtx.Database = string(authData[pos : pos+dbNameEnd])
+			pos += dbNameEnd + 1
+		}
+	}
+
+	// 检查是否使用了正确的认证插件
+	if (clientCapabilities&CLIENT_PLUGIN_AUTH) != 0 && pos < packetLen {
+		pluginNameEnd := bytes.IndexByte(authData[pos:], 0)
+		if pluginNameEnd != -1 {
+			pluginName := string(authData[pos : pos+pluginNameEnd])
+			if pluginName != s.authPluginName {
+				log.Printf("警告: 客户端请求的插件 '%s' 与服务器期望的 '%s' 不匹配",
+					pluginName, s.authPluginName)
+			}
+		}
+	}
+
+	// 在实际系统中，应该验证用户名和密码
+	// 为了简化演示，我们接受任何用户
+
+	// 更新包序列号
+	connCtx.SequenceID = sequenceID + 1
+
+	return connCtx.Username, nil
 }
 
 // 发送OK包
 func (s *Server) sendOKPacket(conn net.Conn) error {
-	// OK包: [00][affected_rows][last_insert_id][status_flags][warnings][info]
-	okPacket := []byte{
-		0,    // OK包标识
-		0,    // 受影响的行数
-		0,    // 最后插入的ID
-		2, 0, // 状态标志
-		0, 0, // 警告数
-	}
+	// OK包格式
+	// Reference: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_ok_packet.html
 
+	// 创建OK包
+	buff := &bytes.Buffer{}
+
+	// 包标识: 0x00 表示OK包
+	buff.WriteByte(0)
+
+	// 受影响的行数 (使用可变长度编码) - 这里简单使用0
+	buff.WriteByte(0)
+
+	// 最后插入ID (使用可变长度编码) - 这里使用0
+	buff.WriteByte(0)
+
+	// 服务器状态标志
+	serverStatus := uint16(0x0002) // 自动提交标志
+	buff.WriteByte(byte(serverStatus))
+	buff.WriteByte(byte(serverStatus >> 8))
+
+	// 警告数量
+	buff.WriteByte(0)
+	buff.WriteByte(0)
+
+	// 带有CLIENT_SESSION_TRACK标志时的额外信息
+	// 这里为简化实现，省略
+
+	okPacket := buff.Bytes()
+
+	// 包头
 	header := []byte{
 		byte(len(okPacket)),
-		0,
-		0,
-		1, // 包序号
+		byte(len(okPacket) >> 8),
+		byte(len(okPacket) >> 16),
+		2, // 包序号 (认证后的OK包是2)
 	}
 
+	// 发送包
 	if _, err := conn.Write(header); err != nil {
-		return err
+		return fmt.Errorf("写入OK包头失败: %v", err)
 	}
 	if _, err := conn.Write(okPacket); err != nil {
-		return err
+		return fmt.Errorf("写入OK包体失败: %v", err)
 	}
 
+	log.Println("发送OK包 - 认证成功")
 	return nil
 }
 
 // 发送错误包
 func (s *Server) sendErrorPacket(conn net.Conn, errCode int, errMsg string) error {
-	// 错误包: [FF][error_code][sql_state_marker][sql_state][error_message]
-	errPacket := make([]byte, 0, len(errMsg)+13)
-	errPacket = append(errPacket, 0xFF)                            // 错误包标识
-	errPacket = append(errPacket, byte(errCode), byte(errCode>>8)) // 错误码
-	errPacket = append(errPacket, '#')                             // SQL状态标记
-	errPacket = append(errPacket, '0', '8', '0', '0', '0')         // SQL状态
-	errPacket = append(errPacket, errMsg...)                       // 错误消息
+	// 错误包格式
+	// Reference: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_err_packet.html
 
+	// 创建错误包
+	buff := &bytes.Buffer{}
+
+	// 包标识: 0xFF 表示错误包
+	buff.WriteByte(0xFF)
+
+	// 错误码 (2字节)
+	buff.WriteByte(byte(errCode))
+	buff.WriteByte(byte(errCode >> 8))
+
+	// SQL状态标记 '#'
+	buff.WriteByte('#')
+
+	// SQL状态 (5字节)
+	buff.WriteString("HY000") // 通用错误状态
+
+	// 错误消息
+	buff.WriteString(errMsg)
+
+	errPacket := buff.Bytes()
+
+	// 包头
 	header := []byte{
 		byte(len(errPacket)),
 		byte(len(errPacket) >> 8),
 		byte(len(errPacket) >> 16),
-		1, // 包序号
+		2, // 包序号 (认证后的错误包通常是2)
 	}
 
+	// 发送包
 	if _, err := conn.Write(header); err != nil {
-		return err
+		return fmt.Errorf("写入错误包头失败: %v", err)
 	}
 	if _, err := conn.Write(errPacket); err != nil {
-		return err
+		return fmt.Errorf("写入错误包体失败: %v", err)
 	}
 
+	log.Printf("发送错误包 - 错误码: %d, 消息: %s", errCode, errMsg)
 	return nil
 }
 
@@ -450,110 +772,176 @@ func (s *Server) receiveClientCommand(conn net.Conn) (string, error) {
 
 // 发送结果包
 func (s *Server) sendResultPacket(conn net.Conn, result string) error {
-	// 简化的结果集处理
+	// 将结果字符串拆分为行
+	rows := strings.Split(result, "\n")
+	if len(rows) == 0 {
+		rows = []string{""}
+	}
+
+	// 构建自定义列名
+	columns := []string{"Result"}
+
+	// 发送结果集
+	return s.sendResultSet(conn, columns, rows)
+}
+
+// 发送结果集
+func (s *Server) sendResultSet(conn net.Conn, columns []string, rows []string) error {
+	sequenceID := byte(1) // 结果集的初始序列ID
+
 	// 1. 发送列数
-	columnCount := []byte{1} // 假设只有一列
+	buff := &bytes.Buffer{}
+	// 列数使用变长整数编码
+	buff.WriteByte(byte(len(columns)))
+	colCountPacket := buff.Bytes()
 
-	headerCol := []byte{
-		byte(len(columnCount)),
-		0,
-		0,
-		1, // 包序号
+	// 发送列数包
+	header := []byte{
+		byte(len(colCountPacket)),
+		byte(len(colCountPacket) >> 8),
+		byte(len(colCountPacket) >> 16),
+		sequenceID,
 	}
+	sequenceID++
 
-	if _, err := conn.Write(headerCol); err != nil {
-		return err
+	if _, err := conn.Write(header); err != nil {
+		return fmt.Errorf("写入列数包头失败: %v", err)
 	}
-	if _, err := conn.Write(columnCount); err != nil {
-		return err
+	if _, err := conn.Write(colCountPacket); err != nil {
+		return fmt.Errorf("写入列数包体失败: %v", err)
 	}
 
 	// 2. 发送列定义
-	colDef := []byte{
-		3, 'd', 'e', 'f', // catalog
-		0,                               // schema
-		6, 'r', 'e', 's', 'u', 'l', 't', // table
-		6, 'r', 'e', 's', 'u', 'l', 't', // org_table
-		6, 'R', 'e', 's', 'u', 'l', 't', // name
-		6, 'R', 'e', 's', 'u', 'l', 't', // org_name
-		12,      // 列定义长度
-		0x0C, 0, // 字符集
-		255, 0, 0, 0, // 列长度
-		0xFD, // 列类型 (VAR_STRING)
-		0, 0, // 标志
-		0,    // 小数点位数
-		0, 0, // 保留
-	}
+	for _, colName := range columns {
+		colDefBuff := &bytes.Buffer{}
 
-	headerDef := []byte{
-		byte(len(colDef)),
-		byte(len(colDef) >> 8),
-		0,
-		2, // 包序号
-	}
+		// 目录 "def"
+		colDefBuff.WriteByte(3)
+		colDefBuff.WriteString("def")
 
-	if _, err := conn.Write(headerDef); err != nil {
-		return err
-	}
-	if _, err := conn.Write(colDef); err != nil {
-		return err
+		// 数据库名 (空)
+		colDefBuff.WriteByte(0)
+
+		// 表名 (使用"Result")
+		tableName := "Result"
+		colDefBuff.WriteByte(byte(len(tableName)))
+		colDefBuff.WriteString(tableName)
+
+		// 原始表名
+		colDefBuff.WriteByte(byte(len(tableName)))
+		colDefBuff.WriteString(tableName)
+
+		// 列名
+		colDefBuff.WriteByte(byte(len(colName)))
+		colDefBuff.WriteString(colName)
+
+		// 原始列名
+		colDefBuff.WriteByte(byte(len(colName)))
+		colDefBuff.WriteString(colName)
+
+		// 下面是固定部分
+		// 字符集(utf8mb4_general_ci), 字段长度(255), 字段类型(VAR_STRING), 标志位等
+		colDefBuff.WriteByte(0x0C) // 字符集长度
+		colDefBuff.WriteByte(0x2d) // 字符集 (utf8mb4_general_ci = 45 = 0x2d)
+		colDefBuff.WriteByte(0x00)
+		colDefBuff.WriteByte(0xff) // 列长度 (255)
+		colDefBuff.WriteByte(0x00)
+		colDefBuff.WriteByte(0x00)
+		colDefBuff.WriteByte(0x00)
+		colDefBuff.WriteByte(0xfd) // 列类型 (VAR_STRING = 253 = 0xfd)
+		colDefBuff.WriteByte(0x00) // 标志 (0)
+		colDefBuff.WriteByte(0x00)
+		colDefBuff.WriteByte(0x00) // 小数点位数 (0)
+		colDefBuff.WriteByte(0x00) // 未使用
+		colDefBuff.WriteByte(0x00)
+
+		colDefPacket := colDefBuff.Bytes()
+
+		// 发送列定义
+		colHeader := []byte{
+			byte(len(colDefPacket)),
+			byte(len(colDefPacket) >> 8),
+			byte(len(colDefPacket) >> 16),
+			sequenceID,
+		}
+		sequenceID++
+
+		if _, err := conn.Write(colHeader); err != nil {
+			return fmt.Errorf("写入列定义包头失败: %v", err)
+		}
+		if _, err := conn.Write(colDefPacket); err != nil {
+			return fmt.Errorf("写入列定义包体失败: %v", err)
+		}
 	}
 
 	// 3. 发送EOF
-	eof := []byte{
-		0xFE, // EOF标识
-		0, 0, // 警告数
-		2, 0, // 状态标志
-	}
+	eofBuff := &bytes.Buffer{}
+	eofBuff.WriteByte(0xFE) // EOF标识
+	eofBuff.WriteByte(0x00) // 警告数
+	eofBuff.WriteByte(0x00)
+	eofBuff.WriteByte(0x02) // 状态标志 (0x0002 = SERVER_STATUS_AUTOCOMMIT)
+	eofBuff.WriteByte(0x00)
+	eofPacket := eofBuff.Bytes()
 
-	headerEof := []byte{
-		byte(len(eof)),
-		0,
-		0,
-		3, // 包序号
+	eofHeader := []byte{
+		byte(len(eofPacket)),
+		byte(len(eofPacket) >> 8),
+		byte(len(eofPacket) >> 16),
+		sequenceID,
 	}
+	sequenceID++
 
-	if _, err := conn.Write(headerEof); err != nil {
-		return err
+	if _, err := conn.Write(eofHeader); err != nil {
+		return fmt.Errorf("写入EOF包头失败: %v", err)
 	}
-	if _, err := conn.Write(eof); err != nil {
-		return err
+	if _, err := conn.Write(eofPacket); err != nil {
+		return fmt.Errorf("写入EOF包体失败: %v", err)
 	}
 
 	// 4. 发送数据行
-	row := make([]byte, 0, len(result)+1)
-	row = append(row, byte(len(result))) // 列长度
-	row = append(row, result...)         // 列值
+	for _, row := range rows {
+		if row == "" {
+			continue // 跳过空行
+		}
 
-	headerRow := []byte{
-		byte(len(row)),
-		byte(len(row) >> 8),
-		0,
-		4, // 包序号
-	}
+		rowBuff := &bytes.Buffer{}
 
-	if _, err := conn.Write(headerRow); err != nil {
-		return err
-	}
-	if _, err := conn.Write(row); err != nil {
-		return err
-	}
+		// 每列的数据用长度前缀
+		rowBuff.WriteByte(byte(len(row)))
+		rowBuff.WriteString(row)
 
-	// 5. 发送EOF
-	headerEofEnd := []byte{
-		byte(len(eof)),
-		0,
-		0,
-		5, // 包序号
-	}
+		rowPacket := rowBuff.Bytes()
 
-	if _, err := conn.Write(headerEofEnd); err != nil {
-		return err
-	}
-	if _, err := conn.Write(eof); err != nil {
-		return err
+		rowHeader := []byte{
+			byte(len(rowPacket)),
+			byte(len(rowPacket) >> 8),
+			byte(len(rowPacket) >> 16),
+			sequenceID,
+		}
+		sequenceID++
+
+		if _, err := conn.Write(rowHeader); err != nil {
+			return fmt.Errorf("写入数据行包头失败: %v", err)
+		}
+		if _, err := conn.Write(rowPacket); err != nil {
+			return fmt.Errorf("写入数据行包体失败: %v", err)
+		}
 	}
 
+	// 5. 发送结束EOF
+	if _, err := conn.Write([]byte{
+		byte(len(eofPacket)),
+		byte(len(eofPacket) >> 8),
+		byte(len(eofPacket) >> 16),
+		sequenceID,
+	}); err != nil {
+		return fmt.Errorf("写入结束EOF包头失败: %v", err)
+	}
+	if _, err := conn.Write(eofPacket); err != nil {
+		return fmt.Errorf("写入结束EOF包体失败: %v", err)
+	}
+
+	log.Printf("发送完成结果集 - %d列 %d行", len(columns), len(rows))
 	return nil
 }
 

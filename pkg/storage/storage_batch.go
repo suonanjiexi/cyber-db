@@ -89,13 +89,16 @@ func (db *DB) persistToDisk() error {
 	tmpFile := db.path + ".tmp"
 	dir := filepath.Dir(db.path)
 
+	// 确保使用系统无关的路径格式
+	tmpFile = filepath.Clean(tmpFile)
+
 	// 确保目录存在
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// 创建临时文件
-	file, err := os.Create(tmpFile)
+	file, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -139,7 +142,15 @@ func (db *DB) persistToDisk() error {
 		return fmt.Errorf("failed to close file: %w", err)
 	}
 
-	// 替换原文件
+	// 替换原文件 - 在Windows上，可能需要先删除目标文件
+	if _, err := os.Stat(db.path); err == nil {
+		// 文件存在，尝试删除
+		if err := os.Remove(db.path); err != nil {
+			return fmt.Errorf("failed to remove existing file: %w", err)
+		}
+	}
+
+	// 重命名临时文件
 	if err := os.Rename(tmpFile, db.path); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}

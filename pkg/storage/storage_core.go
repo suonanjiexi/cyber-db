@@ -87,15 +87,24 @@ func (db *DB) Open() error {
 
 	// 如果是持久化数据库，尝试从文件加载数据
 	if db.persistent {
+		// 确保使用的是系统无关的路径格式
+		db.path = filepath.Clean(db.path)
+
 		// 确保目录存在
 		dir := filepath.Dir(db.path)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
+		// 检查目录是否存在及有访问权限
+		if _, err := os.Stat(dir); err != nil {
+			return fmt.Errorf("无法访问数据目录 %s: %w", dir, err)
+		}
+
 		// 尝试读取现有数据文件
-		if _, err := os.Stat(db.path); err == nil {
-			file, err := os.Open(db.path)
+		if fileInfo, err := os.Stat(db.path); err == nil && !fileInfo.IsDir() {
+			// 确保不是目录，而是文件
+			file, err := os.OpenFile(db.path, os.O_RDONLY, 0644)
 			if err != nil {
 				return fmt.Errorf("failed to open database file: %w", err)
 			}
@@ -117,7 +126,11 @@ func (db *DB) Open() error {
 					break
 				}
 			}
+		} else if !os.IsNotExist(err) && err != nil {
+			// 如果是存在但有其他错误
+			return fmt.Errorf("读取数据文件状态失败: %w", err)
 		}
+		// 如果文件不存在，会在第一次保存时创建
 	}
 
 	db.isOpen = true

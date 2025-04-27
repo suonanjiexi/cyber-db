@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -32,7 +33,7 @@ func main() {
 	// 解析命令行参数
 	flag.StringVar(&host, "host", "localhost", "服务器主机地址")
 	flag.IntVar(&port, "port", 3306, "服务器端口")
-	flag.StringVar(&dataDir, "db", "./data", "数据库目录")
+	flag.StringVar(&dataDir, "db", "./data/db.data", "数据库文件路径")
 	flag.BoolVar(&clusterMode, "cluster-mode", false, "是否启用集群模式")
 	flag.StringVar(&nodeID, "node-id", "", "节点ID，集群模式下必须提供")
 	flag.StringVar(&clusterAddr, "cluster-addr", "", "集群通信地址，格式为host:port")
@@ -67,10 +68,27 @@ func main() {
 		}
 	}
 
-	// 创建数据目录
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("创建数据目录失败: %v", err)
+	// 初始化存储引擎
+	// 使用filepath包处理路径，以确保跨平台兼容性
+	dataDir = filepath.Clean(dataDir)
+	dataPath := dataDir
+
+	// 确保数据库目录存在
+	dbDir := filepath.Dir(dataPath)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		log.Fatalf("创建数据库目录失败: %v", err)
 	}
+
+	db := storage.NewDB(dataPath, true)
+	if err := db.Open(); err != nil {
+		log.Fatalf("存储引擎启动失败: %v", err)
+	}
+	defer func(db *storage.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Printf("存储引擎关闭出错: %v", err)
+		}
+	}(db)
 
 	// 初始化故障转移管理器
 	failoverConfig := failover.FailoverConfig{
@@ -122,18 +140,6 @@ func main() {
 		defer hc.Stop()
 		log.Println("健康检查器已启动")
 	}
-
-	// 初始化存储引擎
-	db := storage.NewDB(dataDir, true)
-	if err := db.Open(); err != nil {
-		log.Fatalf("存储引擎启动失败: %v", err)
-	}
-	defer func(db *storage.DB) {
-		err := db.Close()
-		if err != nil {
-			log.Printf("存储引擎关闭出错: %v", err)
-		}
-	}(db)
 
 	// 初始化服务器（使用完整版服务器）
 	srv := server.NewServer(host, port, db)
