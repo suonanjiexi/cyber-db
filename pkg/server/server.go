@@ -74,6 +74,8 @@ type Server struct {
 	serverCapabilities uint32              // 服务器能力标志
 	serverVersion      string              // 服务器版本
 	authPluginName     string              // 认证插件名
+	connAuth           map[string][]byte   // 连接认证挑战数据
+	connAuthMutex      sync.Mutex          // 认证数据互斥锁
 }
 
 // Connection 表示一个客户端连接的状态
@@ -133,6 +135,7 @@ func NewServer(host string, port int, db *storage.DB) *Server {
 		serverCapabilities: capabilities,            // 服务器能力标志
 		serverVersion:      "8.0.31",                // MySQL 8.0版本
 		authPluginName:     "mysql_native_password", // 使用原生密码认证
+		connAuth:           make(map[string][]byte), // 存储连接认证挑战数据
 	}
 }
 
@@ -634,6 +637,11 @@ func (s *Server) handleClientAuth(conn net.Conn) (string, error) {
 
 	// 更新包序列号
 	connCtx.SequenceID = sequenceID + 1
+
+	// 将认证挑战数据保存到connAuth
+	s.connAuthMutex.Lock()
+	s.connAuth[conn.RemoteAddr().String()] = challenge
+	s.connAuthMutex.Unlock()
 
 	return connCtx.Username, nil
 }
