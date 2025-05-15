@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 var (
@@ -81,6 +82,15 @@ type Engine interface {
 
 	// Flush 将内存中的数据刷新到持久化存储
 	Flush(ctx context.Context) error
+
+	// 分布式支持（新增）
+	RegisterShard(ctx context.Context, shardInfo *ShardInfo) error
+	UnregisterShard(ctx context.Context, shardID string) error
+	GetShardInfo(ctx context.Context, shardID string) (*ShardInfo, error)
+	ListShards(ctx context.Context) ([]*ShardInfo, error)
+	TransferShard(ctx context.Context, shardID string, targetNodeID string) error
+	SplitShard(ctx context.Context, shardID string) (string, string, error)
+	MergeShards(ctx context.Context, shardID1 string, shardID2 string) (string, error)
 }
 
 // Transaction 事务接口
@@ -227,3 +237,68 @@ type EngineSnapshot interface {
 	// Export 导出快照到指定路径
 	Export(path string) error
 }
+
+// ShardInfo 分片信息
+type ShardInfo struct {
+	ID        string                 // 分片ID
+	Range     *KeyRange              // 键范围（范围分片）
+	HashSlots []int                  // 哈希槽（哈希分片）
+	NodeID    string                 // 负责该分片的节点ID
+	State     ShardState             // 分片状态
+	Stats     *ShardStats            // 分片统计信息
+	Metadata  map[string]interface{} // 分片元数据
+}
+
+// KeyRange 键范围
+type KeyRange struct {
+	Start []byte // 起始键（包含）
+	End   []byte // 结束键（不包含）
+}
+
+// ShardState 分片状态
+type ShardState int
+
+const (
+	ShardStateNormal      ShardState = iota // 正常
+	ShardStateTransfering                   // 迁移中
+	ShardStateSplitting                     // 分裂中
+	ShardStateMerging                       // 合并中
+	ShardStateOffline                       // 离线
+)
+
+// ShardStats 分片统计信息
+type ShardStats struct {
+	KeyCount    int64     // 键数量
+	SizeBytes   int64     // 数据大小
+	ReadOps     int64     // 读操作数
+	WriteOps    int64     // 写操作数
+	LastUpdated time.Time // 最后更新时间
+}
+
+// DistributedTransaction 分布式事务接口（新增）
+type DistributedTransaction interface {
+	Transaction
+
+	// 获取事务ID
+	ID() string
+
+	// 获取事务状态
+	State() TxState
+
+	// 获取相关分片
+	Shards() []string
+
+	// 准备阶段（两阶段提交第一阶段）
+	Prepare(ctx context.Context) error
+}
+
+// TxState 事务状态
+type TxState int
+
+const (
+	TxStateInitial   TxState = iota // 初始状态
+	TxStateActive                   // 活跃状态
+	TxStatePrepared                 // 准备完成
+	TxStateCommitted                // 已提交
+	TxStateAborted                  // 已中止
+)

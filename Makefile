@@ -106,6 +106,18 @@ restore: build-tools
 	@echo "恢复数据库..."
 	@$(TOOLS_BIN) restore --input=./backup/backup_latest
 
+# 监控性能
+.PHONY: monitor
+monitor: build-tools
+	@echo "监控数据库性能..."
+	@$(TOOLS_BIN) monitor --engine=hybrid --interval=5
+
+# 短时间监控性能
+.PHONY: quick-monitor
+quick-monitor: build-tools
+	@echo "短时间监控数据库性能(60秒)..."
+	@$(TOOLS_BIN) monitor --engine=hybrid --interval=2 --time=60
+
 # 运行集群(需要使用多个终端)
 .PHONY: run-cluster
 run-cluster:
@@ -131,6 +143,18 @@ bench-htap: build-server
 	@echo "运行HTAP性能测试..."
 	@$(GO) test -bench=HTAP -benchtime=10s ./pkg/storage/...
 
+# 运行存储引擎性能测试
+.PHONY: bench-storage
+bench-storage: build-server
+	@echo "运行存储引擎性能测试..."
+	@$(GO) test -bench=. -benchtime=5s ./pkg/storage/engine_bench_test.go
+
+# 列式存储性能测试
+.PHONY: bench-column
+bench-column: build-server
+	@echo "运行列式存储性能测试..."
+	@$(GO) test -bench=Column -benchtime=5s ./pkg/storage/...
+
 # 帮助
 .PHONY: help
 help:
@@ -152,7 +176,11 @@ help:
 	@echo "  make run-client    运行客户端"
 	@echo "  make backup        备份数据库"
 	@echo "  make restore       恢复数据库"
+	@echo "  make monitor       监控数据库性能"
+	@echo "  make quick-monitor 短时间监控数据库性能(60秒)"
 	@echo "  make bench-htap    运行HTAP性能测试"
+	@echo "  make bench-storage 运行存储引擎性能测试"
+	@echo "  make bench-column  运行列式存储性能测试"
 	@echo "  make clean         清理构建目录"
 	@echo "  make fmt           格式化代码"
 	@echo "  make test          运行测试"

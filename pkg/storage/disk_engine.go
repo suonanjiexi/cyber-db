@@ -82,10 +82,13 @@ func (e *DiskEngine) Open() error {
 // initSchemaCache 从磁盘中读取所有schema并初始化缓存
 func (e *DiskEngine) initSchemaCache() error {
 	// 使用迭代器查找所有schema
-	iter := e.db.NewIter(&pebble.IterOptions{
+	iter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte(schemaKeyPrefix),
 		UpperBound: []byte(schemaKeyPrefix + "\xff"),
 	})
+	if err != nil {
+		return fmt.Errorf("创建迭代器失败: %w", err)
+	}
 	defer iter.Close()
 
 	for iter.First(); iter.Valid(); iter.Next() {
@@ -186,10 +189,13 @@ func (e *DiskEngine) DropDB(ctx context.Context, dbName string) error {
 	dataPrefix := []byte(fmt.Sprintf("%s%s/", dataKeyPrefix, dbName))
 
 	// 删除所有表结构
-	iter := e.db.NewIter(&pebble.IterOptions{
+	iter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: schemaPrefix,
 		UpperBound: append(schemaPrefix, 0xFF),
 	})
+	if err != nil {
+		return fmt.Errorf("创建迭代器失败: %w", err)
+	}
 
 	batch := e.db.NewBatch()
 	defer batch.Close()
@@ -204,10 +210,13 @@ func (e *DiskEngine) DropDB(ctx context.Context, dbName string) error {
 	iter.Close()
 
 	// 删除所有数据
-	dataIter := e.db.NewIter(&pebble.IterOptions{
+	dataIter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: dataPrefix,
 		UpperBound: append(dataPrefix, 0xFF),
 	})
+	if err != nil {
+		return fmt.Errorf("创建数据迭代器失败: %w", err)
+	}
 
 	for dataIter.First(); dataIter.Valid(); dataIter.Next() {
 		batch.Delete(dataIter.Key(), nil)
@@ -325,10 +334,13 @@ func (e *DiskEngine) DropTable(ctx context.Context, dbName, tableName string) er
 	batch := e.db.NewBatch()
 	defer batch.Close()
 
-	iter := e.db.NewIter(&pebble.IterOptions{
+	iter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: dataPrefix,
 		UpperBound: append(dataPrefix, 0xFF),
 	})
+	if err != nil {
+		return fmt.Errorf("创建迭代器失败: %w", err)
+	}
 
 	for iter.First(); iter.Valid(); iter.Next() {
 		batch.Delete(iter.Key(), nil)
@@ -475,48 +487,58 @@ func (e *DiskEngine) BeginTx(ctx context.Context) (Transaction, error) {
 	}, nil
 }
 
-// Scan 扫描数据
+// Scan 扫描指定范围的数据
 func (e *DiskEngine) Scan(ctx context.Context, dbName, tableName string, startKey, endKey []byte) (Iterator, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	// 检查表是否存在
-	schemaKey := fmt.Sprintf("%s%s/%s", schemaKeyPrefix, dbName, tableName)
-	_, ok := e.schemaCache.Load(schemaKey)
-	if !ok {
-		// 从磁盘检查
-		_, schemaCloser, err := e.db.Get([]byte(schemaKey))
-		if err == pebble.ErrNotFound {
-			return nil, ErrTableNotFound
-		}
-		if err != nil {
-			return nil, err
-		}
-		schemaCloser.Close()
+	if e.db == nil {
+		return nil, fmt.Errorf("数据库未打开")
 	}
 
-	// 构建范围边界
-	prefix := fmt.Sprintf("%s%s/%s/", dataKeyPrefix, dbName, tableName)
-	lowerBound := []byte(prefix)
+	// 检查数据库是否存在
+	metaKey := []byte(fmt.Sprintf("%s%s", metaKeyPrefix, dbName))
+	_, closer, err := e.db.Get(metaKey)
+	if err == pebble.ErrNotFound {
+		return nil, ErrDBNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	closer.Close()
+
+	// 构造前缀
+	prefix := makeDataKey(dbName, tableName, nil)
+	prefixLen := len(prefix)
+
+	// 构造查询范围
+	var lowerBound, upperBound []byte
 	if startKey != nil {
 		lowerBound = makeDataKey(dbName, tableName, startKey)
+	} else {
+		lowerBound = prefix
 	}
 
-	upperBound := append([]byte(prefix), 0xFF)
 	if endKey != nil {
 		upperBound = makeDataKey(dbName, tableName, endKey)
+	} else {
+		// 使用前缀的下一个字节作为上界
+		upperBound = append(append([]byte{}, prefix...), 0xFF)
 	}
 
 	// 创建迭代器
-	pIter := e.db.NewIter(&pebble.IterOptions{
+	iter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("创建迭代器失败: %w", err)
+	}
 
 	return &DiskIterator{
-		iter:      pIter,
-		prefix:    []byte(prefix),
-		prefixLen: len(prefix),
+		iter:      iter,
+		prefix:    prefix,
+		prefixLen: prefixLen,
 	}, nil
 }
 
@@ -527,10 +549,13 @@ func (e *DiskEngine) ListDBs(ctx context.Context) ([]string, error) {
 
 	// 使用前缀迭代器查找所有数据库元数据
 	metaPrefix := []byte(metaKeyPrefix)
-	iter := e.db.NewIter(&pebble.IterOptions{
+	iter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: metaPrefix,
 		UpperBound: append(metaPrefix, 0xFF),
 	})
+	if err != nil {
+		return nil, fmt.Errorf("创建迭代器失败: %w", err)
+	}
 	defer iter.Close()
 
 	dbs := make([]string, 0)
@@ -561,10 +586,13 @@ func (e *DiskEngine) ListTables(ctx context.Context, dbName string) ([]string, e
 
 	// 使用前缀迭代器查找所有表
 	schemaPrefix := []byte(fmt.Sprintf("%s%s/", schemaKeyPrefix, dbName))
-	iter := e.db.NewIter(&pebble.IterOptions{
+	iter, err := e.db.NewIter(&pebble.IterOptions{
 		LowerBound: schemaPrefix,
 		UpperBound: append(schemaPrefix, 0xFF),
 	})
+	if err != nil {
+		return nil, fmt.Errorf("创建迭代器失败: %w", err)
+	}
 	defer iter.Close()
 
 	tables := make([]string, 0)
@@ -694,10 +722,13 @@ func (e *DiskEngine) Stats(ctx context.Context) (*EngineStats, error) {
 		for _, tableName := range tables {
 			// 为简化起见，使用迭代器进行简单计数
 			dataPrefix := []byte(fmt.Sprintf("%s%s/%s/", dataKeyPrefix, dbName, tableName))
-			iter := e.db.NewIter(&pebble.IterOptions{
+			iter, err := e.db.NewIter(&pebble.IterOptions{
 				LowerBound: dataPrefix,
 				UpperBound: append(dataPrefix, 0xFF),
 			})
+			if err != nil {
+				continue
+			}
 
 			count := int64(0)
 			for iter.First(); iter.Valid(); iter.Next() {
@@ -714,13 +745,13 @@ func (e *DiskEngine) Stats(ctx context.Context) (*EngineStats, error) {
 		DBCount:          dbCount,
 		TableCount:       tableCount,
 		KeyCount:         keyCount,
-		DiskUsage:        metrics.DiskSpaceUsage(),
+		DiskUsage:        int64(metrics.DiskSpaceUsage()),
 		MemoryUsage:      int64(metrics.BlockCache.Size),
-		ReadOps:          metrics.Read.Count,
-		WriteOps:         metrics.Write.Count,
-		ReadLatency:      metrics.Read.Latency.Avg().Nanoseconds(),
-		WriteLatency:     metrics.Write.Latency.Avg().Nanoseconds(),
-		CacheHitRatio:    float64(metrics.BlockCache.Hit) / float64(metrics.BlockCache.Hit+metrics.BlockCache.Miss),
+		ReadOps:          int64(metrics.WAL.BytesIn),
+		WriteOps:         int64(metrics.WAL.BytesWritten),
+		ReadLatency:      0, // Pebble不直接提供此指标
+		WriteLatency:     0, // Pebble不直接提供此指标
+		CacheHitRatio:    0, // 需要自行计算或提供替代指标
 		CompactionStatus: fmt.Sprintf("活跃: %d", metrics.Compact.Count),
 		UpTime:           0, // 此处需要存储引擎启动时间
 		AdditionalInfo:   make(map[string]string),
@@ -729,8 +760,8 @@ func (e *DiskEngine) Stats(ctx context.Context) (*EngineStats, error) {
 	// 添加额外信息
 	stats.AdditionalInfo["levels"] = fmt.Sprintf("%d", len(metrics.Levels))
 	stats.AdditionalInfo["mem_table_size"] = fmt.Sprintf("%d", metrics.MemTable.Size)
-	stats.AdditionalInfo["total_writes"] = fmt.Sprintf("%d", metrics.Write.Count)
-	stats.AdditionalInfo["total_reads"] = fmt.Sprintf("%d", metrics.Read.Count)
+	stats.AdditionalInfo["sst_file_count"] = fmt.Sprintf("%d", metrics.Table.ZombieCount+metrics.Table.ObsoleteCount)
+	stats.AdditionalInfo["bytes_written"] = fmt.Sprintf("%d", metrics.WAL.BytesWritten)
 
 	return stats, nil
 }
@@ -863,10 +894,14 @@ func (e *DiskEngine) Backup(ctx context.Context, writer io.Writer) error {
 
 			// 读取表中的所有数据
 			dataPrefix := []byte(fmt.Sprintf("%s%s/%s/", dataKeyPrefix, dbName, tableName))
-			iter := e.db.NewIter(&pebble.IterOptions{
+			iter, err := e.db.NewIter(&pebble.IterOptions{
 				LowerBound: dataPrefix,
 				UpperBound: append(dataPrefix, 0xFF),
 			})
+			if err != nil {
+				return fmt.Errorf("创建迭代器失败: %w", err)
+			}
+			defer iter.Close()
 
 			// 统计键值对数量
 			keyCount := 0
@@ -876,7 +911,6 @@ func (e *DiskEngine) Backup(ctx context.Context, writer io.Writer) error {
 
 			// 写入键值对数量
 			if err := enc.Encode(keyCount); err != nil {
-				iter.Close()
 				return err
 			}
 
@@ -890,16 +924,12 @@ func (e *DiskEngine) Backup(ctx context.Context, writer io.Writer) error {
 
 				// 写入键和值
 				if err := enc.Encode(actualKey); err != nil {
-					iter.Close()
 					return err
 				}
 				if err := enc.Encode(value); err != nil {
-					iter.Close()
 					return err
 				}
 			}
-
-			iter.Close()
 		}
 	}
 
@@ -1221,20 +1251,36 @@ func (tx *DiskTransaction) BatchWrite(ctx context.Context, ops []BatchOperation)
 	return nil
 }
 
-// Scan 在事务中扫描数据
+// Scan 在事务中扫描指定范围的数据
 func (tx *DiskTransaction) Scan(ctx context.Context, dbName, tableName string, startKey, endKey []byte) (Iterator, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
 	if tx.closed {
-		return nil, ErrTransactionFailed
+		return nil, fmt.Errorf("事务已关闭")
 	}
 
-	// 构造前缀和范围
-	prefix := []byte(fmt.Sprintf("%s%s/%s/", dataKeyPrefix, dbName, tableName))
+	if tx.engine.db == nil {
+		return nil, fmt.Errorf("数据库未打开")
+	}
 
+	// 检查数据库是否存在
+	metaKey := []byte(fmt.Sprintf("%s%s", metaKeyPrefix, dbName))
+	_, closer, err := tx.engine.db.Get(metaKey)
+	if err == pebble.ErrNotFound {
+		return nil, ErrDBNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	closer.Close()
+
+	// 构造前缀
+	prefix := makeDataKey(dbName, tableName, nil)
+	prefixLen := len(prefix)
+
+	// 构造查询范围
 	var lowerBound, upperBound []byte
-
 	if startKey != nil {
 		lowerBound = makeDataKey(dbName, tableName, startKey)
 	} else {
@@ -1244,24 +1290,32 @@ func (tx *DiskTransaction) Scan(ctx context.Context, dbName, tableName string, s
 	if endKey != nil {
 		upperBound = makeDataKey(dbName, tableName, endKey)
 	} else {
-		upperBound = append(prefix, 0xFF)
+		// 当endKey为nil时，使用前缀的下一个字节作为上界
+		upperBound = append(append([]byte{}, prefix...), 0xFF)
 	}
 
-	// 创建Pebble的迭代器，使用事务视图
-	iter := tx.batch.NewIter(&pebble.IterOptions{
+	// 创建迭代器选项
+	iterOpts := &pebble.IterOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
-	})
+	}
 
+	// 创建Pebble迭代器
+	// 注意：在事务中使用batch的NewIter
+	iter, err := tx.batch.NewIter(iterOpts)
+	if err != nil {
+		return nil, fmt.Errorf("创建迭代器失败: %w", err)
+	}
+
+	// 创建DiskIterator，包装Pebble迭代器
 	return &DiskIterator{
 		iter:      iter,
 		prefix:    prefix,
-		prefixLen: len(prefix),
-		closed:    false,
+		prefixLen: prefixLen,
 	}, nil
 }
 
-// DiskIterator 基于Pebble的迭代器实现
+// DiskIterator 基于Pebble迭代器的实现
 type DiskIterator struct {
 	iter      *pebble.Iterator
 	prefix    []byte
@@ -1270,57 +1324,88 @@ type DiskIterator struct {
 	err       error
 }
 
-// Next 移动到下一条记录
+// Next 移动到下一个键值对
 func (it *DiskIterator) Next() bool {
-	if it.closed {
+	if it.closed || it.err != nil {
 		return false
 	}
 
-	if it.iter.Valid() {
-		it.iter.Next()
-	} else if !it.iter.First() {
+	// 如果迭代器无效，返回false
+	if !it.iter.Valid() {
+		return false
+	}
+
+	// 移动到下一个键值对
+	if !it.iter.Next() {
+		// 检查是否有错误发生
+		if err := it.iter.Error(); err != nil {
+			it.err = err
+		}
+		return false
+	}
+
+	// 检查是否超出前缀范围
+	if it.prefix != nil && !it.isWithinPrefix() {
 		return false
 	}
 
 	return it.iter.Valid()
 }
 
-// Key 获取当前记录的键（去除前缀）
+// isWithinPrefix 检查当前键是否在前缀范围内
+func (it *DiskIterator) isWithinPrefix() bool {
+	if !it.iter.Valid() {
+		return false
+	}
+
+	key := it.iter.Key()
+	if len(key) < it.prefixLen {
+		return false
+	}
+
+	for i := 0; i < it.prefixLen; i++ {
+		if key[i] != it.prefix[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Key 获取当前键
 func (it *DiskIterator) Key() []byte {
 	if it.closed || !it.iter.Valid() {
 		return nil
 	}
 
-	fullKey := it.iter.Key()
-	// 移除前缀，只返回用户键部分
-	return fullKey[it.prefixLen:]
+	key := it.iter.Key()
+	// 返回不带前缀的键
+	if it.prefix != nil && len(key) >= it.prefixLen {
+		return key[it.prefixLen:]
+	}
+	return key
 }
 
-// Value 获取当前记录的值
+// Value 获取当前值
 func (it *DiskIterator) Value() []byte {
 	if it.closed || !it.iter.Valid() {
 		return nil
 	}
 
-	value := it.iter.Value()
-	// 复制值
-	result := make([]byte, len(value))
-	copy(result, value)
-
-	return result
+	return it.iter.Value()
 }
 
-// Error 获取迭代过程中的错误
+// Error 返回迭代过程中的错误
 func (it *DiskIterator) Error() error {
-	if it.closed {
-		return fmt.Errorf("迭代器已关闭")
-	}
-
 	if it.err != nil {
 		return it.err
 	}
 
-	return it.iter.Error()
+	if it.iter != nil {
+		return it.iter.Error()
+	}
+
+	return nil
 }
 
 // Close 关闭迭代器
@@ -1330,29 +1415,43 @@ func (it *DiskIterator) Close() error {
 	}
 
 	it.closed = true
-	it.iter.Close()
+	if it.iter != nil {
+		return it.iter.Close()
+	}
 
 	return nil
 }
 
-// Seek 实现Iterator接口的Seek方法
+// Seek 定位到指定的键或其后继
 func (it *DiskIterator) Seek(key []byte) bool {
-	if it.closed {
+	if it.closed || it.err != nil {
 		return false
 	}
 
-	// 构造完整的键（添加前缀）
-	fullKey := make([]byte, it.prefixLen+len(key))
-	copy(fullKey, it.prefix)
-	copy(fullKey[it.prefixLen:], key)
+	// 如果有前缀，需要附加到搜索键上
+	seekKey := key
+	if it.prefix != nil {
+		seekKey = append(append([]byte{}, it.prefix...), key...)
+	}
 
-	// 使用Pebble迭代器的Seek方法
-	return it.iter.SeekGE(fullKey)
+	if !it.iter.SeekGE(seekKey) {
+		if err := it.iter.Error(); err != nil {
+			it.err = err
+		}
+		return false
+	}
+
+	// 检查是否仍在前缀范围内
+	if it.prefix != nil && !it.isWithinPrefix() {
+		return false
+	}
+
+	return it.iter.Valid()
 }
 
-// Valid 实现Iterator接口的Valid方法
+// Valid 检查迭代器是否有效
 func (it *DiskIterator) Valid() bool {
-	return !it.closed && it.iter.Valid()
+	return !it.closed && it.err == nil && it.iter.Valid() && (it.prefix == nil || it.isWithinPrefix())
 }
 
 // 辅助函数：构建数据键

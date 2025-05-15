@@ -111,4 +111,72 @@ security:
   # TLS证书路径
   tls_cert_path: "certs/server.crt"
   # TLS密钥路径
-  tls_key_path: "certs/server.key" 
+  tls_key_path: "certs/server.key"
+
+# 列式存储配置
+column_store:
+  # 是否启用列式存储
+  enabled: true
+  
+  # 列数据块大小(KB)
+  block_size_kb: 64
+  
+  # 列压缩算法: none, snappy, lz4, zstd
+  compression: snappy
+  
+  # 统计信息更新间隔(毫秒)
+  stats_interval_ms: 5000
+
+# 性能监控配置
+performance:
+  # 是否启用性能监控
+  enabled: true
+  
+  # 采样间隔(毫秒)
+  sample_interval_ms: 2000
+  
+  # 保留的最大样本数
+  max_samples: 1000
+  
+  # 性能顾问阈值
+  thresholds:
+    # 慢读阈值（毫秒）
+    slow_read_ms: 5
+    # 慢写阈值（毫秒）
+    slow_write_ms: 10
+    # 低缓存命中率阈值(%)
+    low_cache_hit_ratio: 80
+
+# 日志配置
+logging:
+  # 日志级别: debug, info, warn, error
+  level: info
+  
+  # 日志文件
+  file: logs/cyberdb.log
+  
+  # 日志轮转大小(MB)
+  rotation_size_mb: 100
+  
+  # 最大轮转文件数
+  max_rotation_files: 10
+  
+  # 是否输出到控制台
+  console_output: true
+
+# API服务配置
+server:
+  # 监听地址
+  host: 0.0.0.0
+  
+  # 监听端口
+  port: 8080
+  
+  # 最大并发连接数
+  max_connections: 1000
+  
+  # 读取超时(毫秒)
+  read_timeout_ms: 5000
+  
+  # 写入超时(毫秒)
+  write_timeout_ms: 5000 

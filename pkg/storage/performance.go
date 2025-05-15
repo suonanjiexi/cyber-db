@@ -1,11 +1,862 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cyberdb/cyberdb/pkg/common/logger"
 )
+
+// MetricType 指标类型
+type MetricType int
+
+const (
+	// MetricTypeCounter 计数器类型指标
+	MetricTypeCounter MetricType = iota
+	// MetricTypeGauge 仪表盘类型指标
+	MetricTypeGauge
+	// MetricTypeHistogram 直方图类型指标
+	MetricTypeHistogram
+	// MetricTypeTimer 计时器类型指标
+	MetricTypeTimer
+)
+
+// Metric 性能指标接口
+type Metric interface {
+	// Name 获取指标名称
+	Name() string
+	// Type 获取指标类型
+	Type() MetricType
+	// Value 获取指标当前值
+	Value() interface{}
+	// Reset 重置指标
+	Reset()
+}
+
+// Counter 计数器指标
+type Counter struct {
+	name  string
+	value int64
+	mu    sync.RWMutex
+}
+
+// NewCounter 创建新的计数器
+func NewCounter(name string) *Counter {
+	return &Counter{
+		name:  name,
+		value: 0,
+	}
+}
+
+// Name 获取指标名称
+func (c *Counter) Name() string {
+	return c.name
+}
+
+// Type 获取指标类型
+func (c *Counter) Type() MetricType {
+	return MetricTypeCounter
+}
+
+// Value 获取指标当前值
+func (c *Counter) Value() interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.value
+}
+
+// Inc 递增计数器
+func (c *Counter) Inc() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.value++
+}
+
+// Add 增加指定值
+func (c *Counter) Add(delta int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.value += delta
+}
+
+// Reset 重置计数器
+func (c *Counter) Reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.value = 0
+}
+
+// Gauge 仪表盘指标
+type Gauge struct {
+	name  string
+	value float64
+	mu    sync.RWMutex
+}
+
+// NewGauge 创建新的仪表盘
+func NewGauge(name string) *Gauge {
+	return &Gauge{
+		name:  name,
+		value: 0,
+	}
+}
+
+// Name 获取指标名称
+func (g *Gauge) Name() string {
+	return g.name
+}
+
+// Type 获取指标类型
+func (g *Gauge) Type() MetricType {
+	return MetricTypeGauge
+}
+
+// Value 获取指标当前值
+func (g *Gauge) Value() interface{} {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.value
+}
+
+// Set 设置值
+func (g *Gauge) Set(value float64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.value = value
+}
+
+// Inc 递增值
+func (g *Gauge) Inc() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.value++
+}
+
+// Dec 递减值
+func (g *Gauge) Dec() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.value--
+}
+
+// Add 增加指定值
+func (g *Gauge) Add(delta float64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.value += delta
+}
+
+// Reset 重置为0
+func (g *Gauge) Reset() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.value = 0
+}
+
+// Histogram 直方图指标
+type Histogram struct {
+	name    string
+	buckets []float64
+	counts  []int64
+	sum     float64
+	count   int64
+	mu      sync.RWMutex
+}
+
+// NewHistogram 创建新的直方图
+func NewHistogram(name string, buckets []float64) *Histogram {
+	return &Histogram{
+		name:    name,
+		buckets: buckets,
+		counts:  make([]int64, len(buckets)+1),
+		sum:     0,
+		count:   0,
+	}
+}
+
+// Name 获取指标名称
+func (h *Histogram) Name() string {
+	return h.name
+}
+
+// Type 获取指标类型
+func (h *Histogram) Type() MetricType {
+	return MetricTypeHistogram
+}
+
+// Value 获取指标当前值
+func (h *Histogram) Value() interface{} {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	result := map[string]interface{}{
+		"buckets": make([]map[string]interface{}, len(h.buckets)),
+		"sum":     h.sum,
+		"count":   h.count,
+	}
+
+	for i, threshold := range h.buckets {
+		result["buckets"].([]map[string]interface{})[i] = map[string]interface{}{
+			"le":    threshold,
+			"count": h.counts[i],
+		}
+	}
+
+	// 添加+Inf桶
+	result["buckets"].([]map[string]interface{})[len(h.buckets)] = map[string]interface{}{
+		"le":    "+Inf",
+		"count": h.counts[len(h.buckets)],
+	}
+
+	return result
+}
+
+// Observe 观察一个值
+func (h *Histogram) Observe(value float64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// 更新总和和计数
+	h.sum += value
+	h.count++
+
+	// 更新桶计数
+	for i, threshold := range h.buckets {
+		if value <= threshold {
+			h.counts[i]++
+			return
+		}
+	}
+
+	// 如果大于所有桶，更新最后一个桶
+	h.counts[len(h.buckets)]++
+}
+
+// Reset 重置直方图
+func (h *Histogram) Reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.sum = 0
+	h.count = 0
+	for i := range h.counts {
+		h.counts[i] = 0
+	}
+}
+
+// Timer 计时器指标
+type Timer struct {
+	name      string
+	histogram *Histogram
+	mu        sync.RWMutex
+}
+
+// NewTimer 创建新的计时器
+func NewTimer(name string) *Timer {
+	// 默认桶：1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s
+	buckets := []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+
+	return &Timer{
+		name:      name,
+		histogram: NewHistogram(name, buckets),
+	}
+}
+
+// Name 获取指标名称
+func (t *Timer) Name() string {
+	return t.name
+}
+
+// Type 获取指标类型
+func (t *Timer) Type() MetricType {
+	return MetricTypeTimer
+}
+
+// Value 获取指标当前值
+func (t *Timer) Value() interface{} {
+	return t.histogram.Value()
+}
+
+// RecordDuration 记录持续时间（毫秒）
+func (t *Timer) RecordDuration(duration float64) {
+	t.histogram.Observe(duration)
+}
+
+// Time 计时函数执行时间
+func (t *Timer) Time(f func()) {
+	start := time.Now()
+	f()
+	duration := float64(time.Since(start).Milliseconds())
+	t.RecordDuration(duration)
+}
+
+// Reset 重置计时器
+func (t *Timer) Reset() {
+	t.histogram.Reset()
+}
+
+// PerformanceMonitor 性能监控组件
+type PerformanceMonitor struct {
+	metrics   map[string]Metric
+	mu        sync.RWMutex
+	startTime time.Time
+
+	// 存储性能数据的时间序列
+	timeSeries map[string][]TimeSeriesPoint
+
+	// 性能阈值
+	thresholds map[string]float64
+
+	// 是否启用
+	enabled bool
+}
+
+// TimeSeriesPoint 时间序列数据点
+type TimeSeriesPoint struct {
+	Timestamp time.Time
+	Value     interface{}
+}
+
+// NewPerformanceMonitor 创建新的性能监控组件
+func NewPerformanceMonitor() *PerformanceMonitor {
+	return &PerformanceMonitor{
+		metrics:    make(map[string]Metric),
+		startTime:  time.Now(),
+		timeSeries: make(map[string][]TimeSeriesPoint),
+		thresholds: make(map[string]float64),
+		enabled:    true,
+	}
+}
+
+// RegisterMetric 注册度量指标
+func (pm *PerformanceMonitor) RegisterMetric(metric Metric) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pm.metrics[metric.Name()] = metric
+}
+
+// GetMetric 获取指标
+func (pm *PerformanceMonitor) GetMetric(name string) (Metric, bool) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	metric, ok := pm.metrics[name]
+	return metric, ok
+}
+
+// SetThreshold 设置性能阈值
+func (pm *PerformanceMonitor) SetThreshold(metricName string, threshold float64) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pm.thresholds[metricName] = threshold
+}
+
+// Enable 启用监控
+func (pm *PerformanceMonitor) Enable() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pm.enabled = true
+}
+
+// Disable 禁用监控
+func (pm *PerformanceMonitor) Disable() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pm.enabled = false
+}
+
+// IsEnabled 检查是否启用
+func (pm *PerformanceMonitor) IsEnabled() bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	return pm.enabled
+}
+
+// RecordMetrics 记录当前指标到时间序列
+func (pm *PerformanceMonitor) RecordMetrics() {
+	if !pm.IsEnabled() {
+		return
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	now := time.Now()
+
+	// 记录每个指标的当前值
+	for name, metric := range pm.metrics {
+		// 检查时间序列是否存在
+		if _, exists := pm.timeSeries[name]; !exists {
+			pm.timeSeries[name] = make([]TimeSeriesPoint, 0)
+		}
+
+		// 添加当前值
+		pm.timeSeries[name] = append(pm.timeSeries[name], TimeSeriesPoint{
+			Timestamp: now,
+			Value:     metric.Value(),
+		})
+
+		// 限制时间序列长度，避免内存占用过高
+		if len(pm.timeSeries[name]) > 1000 {
+			pm.timeSeries[name] = pm.timeSeries[name][len(pm.timeSeries[name])-1000:]
+		}
+
+		// 检查阈值并记录警告
+		if threshold, exists := pm.thresholds[name]; exists {
+			var currentValue float64
+
+			switch v := metric.Value().(type) {
+			case int64:
+				currentValue = float64(v)
+			case float64:
+				currentValue = v
+			case map[string]interface{}:
+				// 对于直方图和计时器，检查平均值
+				if count, ok := v["count"].(int64); ok && count > 0 {
+					if sum, ok := v["sum"].(float64); ok {
+						currentValue = sum / float64(count)
+					}
+				}
+			}
+
+			if currentValue > threshold {
+				logger.Warn(fmt.Sprintf("性能指标 %s 超出阈值: %.2f > %.2f", name, currentValue, threshold))
+			}
+		}
+	}
+
+	// 添加系统指标
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	systemMetrics := map[string]interface{}{
+		"goroutines":     runtime.NumGoroutine(),
+		"heap_alloc":     memStats.HeapAlloc,
+		"heap_idle":      memStats.HeapIdle,
+		"heap_released":  memStats.HeapReleased,
+		"gc_pause_total": memStats.PauseTotalNs,
+		"gc_num":         memStats.NumGC,
+	}
+
+	for name, value := range systemMetrics {
+		metricName := "system." + name
+
+		if _, exists := pm.timeSeries[metricName]; !exists {
+			pm.timeSeries[metricName] = make([]TimeSeriesPoint, 0)
+		}
+
+		pm.timeSeries[metricName] = append(pm.timeSeries[metricName], TimeSeriesPoint{
+			Timestamp: now,
+			Value:     value,
+		})
+
+		if len(pm.timeSeries[metricName]) > 1000 {
+			pm.timeSeries[metricName] = pm.timeSeries[metricName][len(pm.timeSeries[metricName])-1000:]
+		}
+	}
+}
+
+// StartRecordingTimer 开始记录函数执行时间
+func (pm *PerformanceMonitor) StartRecordingTimer(name string) func() {
+	if !pm.IsEnabled() {
+		return func() {}
+	}
+
+	start := time.Now()
+
+	return func() {
+		duration := float64(time.Since(start).Milliseconds())
+
+		pm.mu.Lock()
+		defer pm.mu.Unlock()
+
+		// 查找或创建计时器
+		metric, exists := pm.metrics[name]
+		if !exists {
+			timer := NewTimer(name)
+			pm.metrics[name] = timer
+			metric = timer
+		}
+
+		// 确保是计时器类型
+		if timer, ok := metric.(*Timer); ok {
+			timer.RecordDuration(duration)
+		} else {
+			logger.Error(fmt.Sprintf("指标 %s 不是计时器类型", name))
+		}
+	}
+}
+
+// GetMetricsSnapshot 获取所有指标的快照
+func (pm *PerformanceMonitor) GetMetricsSnapshot() map[string]interface{} {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	snapshot := make(map[string]interface{})
+
+	for name, metric := range pm.metrics {
+		snapshot[name] = metric.Value()
+	}
+
+	// 添加运行时间
+	snapshot["uptime_seconds"] = time.Since(pm.startTime).Seconds()
+
+	// 添加系统信息
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	snapshot["system"] = map[string]interface{}{
+		"goroutines":    runtime.NumGoroutine(),
+		"heap_alloc_mb": float64(memStats.HeapAlloc) / 1024 / 1024,
+		"heap_idle_mb":  float64(memStats.HeapIdle) / 1024 / 1024,
+		"heap_objects":  memStats.HeapObjects,
+		"gc_pause_ms":   float64(memStats.PauseTotalNs) / 1000000,
+		"gc_num":        memStats.NumGC,
+		"num_cpu":       runtime.NumCPU(),
+	}
+
+	return snapshot
+}
+
+// GetTimeSeriesData 获取指定指标的时间序列数据
+func (pm *PerformanceMonitor) GetTimeSeriesData(name string, duration time.Duration) []TimeSeriesPoint {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	series, exists := pm.timeSeries[name]
+	if !exists {
+		return nil
+	}
+
+	// 如果未指定持续时间，返回所有数据
+	if duration == 0 {
+		return series
+	}
+
+	// 过滤指定时间范围内的数据
+	cutoff := time.Now().Add(-duration)
+	var result []TimeSeriesPoint
+
+	for _, point := range series {
+		if point.Timestamp.After(cutoff) {
+			result = append(result, point)
+		}
+	}
+
+	return result
+}
+
+// ExportMetricsJSON 将指标导出为JSON
+func (pm *PerformanceMonitor) ExportMetricsJSON() ([]byte, error) {
+	snapshot := pm.GetMetricsSnapshot()
+	return json.Marshal(snapshot)
+}
+
+// ResetAllMetrics 重置所有指标
+func (pm *PerformanceMonitor) ResetAllMetrics() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	for _, metric := range pm.metrics {
+		metric.Reset()
+	}
+
+	// 清空时间序列数据
+	pm.timeSeries = make(map[string][]TimeSeriesPoint)
+
+	// 更新启动时间
+	pm.startTime = time.Now()
+}
+
+// PerformanceAdvisor 性能顾问组件
+type PerformanceAdvisor struct {
+	monitor     *PerformanceMonitor
+	rules       []AdvisorRule
+	suggestions []Suggestion
+	enabled     bool
+	mu          sync.RWMutex
+}
+
+// AdvisorRule 顾问规则
+type AdvisorRule struct {
+	Name        string
+	Description string
+	Evaluate    func(pm *PerformanceMonitor) []Suggestion
+}
+
+// Suggestion 优化建议
+type Suggestion struct {
+	RuleName    string
+	Severity    SeverityLevel
+	Description string
+	Action      string
+	Timestamp   time.Time
+}
+
+// SeverityLevel 严重级别
+type SeverityLevel int
+
+const (
+	// SeverityInfo 信息级别
+	SeverityInfo SeverityLevel = iota
+	// SeverityWarning 警告级别
+	SeverityWarning
+	// SeverityCritical 严重级别
+	SeverityCritical
+)
+
+// NewPerformanceAdvisor 创建新的性能顾问
+func NewPerformanceAdvisor(monitor *PerformanceMonitor) *PerformanceAdvisor {
+	advisor := &PerformanceAdvisor{
+		monitor:     monitor,
+		rules:       make([]AdvisorRule, 0),
+		suggestions: make([]Suggestion, 0),
+		enabled:     true,
+	}
+
+	// 注册默认规则
+	advisor.RegisterDefaultRules()
+
+	return advisor
+}
+
+// RegisterRule 注册规则
+func (pa *PerformanceAdvisor) RegisterRule(rule AdvisorRule) {
+	pa.mu.Lock()
+	defer pa.mu.Unlock()
+
+	pa.rules = append(pa.rules, rule)
+}
+
+// RegisterDefaultRules 注册默认规则
+func (pa *PerformanceAdvisor) RegisterDefaultRules() {
+	// 高延迟规则
+	pa.RegisterRule(AdvisorRule{
+		Name:        "high_latency",
+		Description: "检测操作延迟是否过高",
+		Evaluate: func(pm *PerformanceMonitor) []Suggestion {
+			var suggestions []Suggestion
+
+			// 检查"write_latency"和"read_latency"指标
+			for _, metricName := range []string{"write_latency", "read_latency"} {
+				metric, exists := pm.GetMetric(metricName)
+				if !exists {
+					continue
+				}
+
+				if timer, ok := metric.(*Timer); ok {
+					histData := timer.Value().(map[string]interface{})
+
+					count := histData["count"].(int64)
+					if count == 0 {
+						continue
+					}
+
+					sum := histData["sum"].(float64)
+					avgLatency := sum / float64(count)
+
+					// 检查平均延迟
+					var severity SeverityLevel
+					var action string
+
+					if avgLatency > 100 { // 超过100ms
+						severity = SeverityCritical
+						action = "考虑添加索引，优化查询，或增加缓存"
+					} else if avgLatency > 50 { // 超过50ms
+						severity = SeverityWarning
+						action = "检查查询效率，考虑批处理操作"
+					} else if avgLatency > 20 { // 超过20ms
+						severity = SeverityInfo
+						action = "监视性能趋势，考虑未来优化"
+					} else {
+						continue // 性能正常，不需要建议
+					}
+
+					opType := "读取"
+					if metricName == "write_latency" {
+						opType = "写入"
+					}
+
+					suggestions = append(suggestions, Suggestion{
+						RuleName:    "high_latency",
+						Severity:    severity,
+						Description: fmt.Sprintf("%s操作的平均延迟为%.2fms，高于推荐值", opType, avgLatency),
+						Action:      action,
+						Timestamp:   time.Now(),
+					})
+				}
+			}
+
+			return suggestions
+		},
+	})
+
+	// 内存使用规则
+	pa.RegisterRule(AdvisorRule{
+		Name:        "memory_usage",
+		Description: "检测内存使用是否过高",
+		Evaluate: func(pm *PerformanceMonitor) []Suggestion {
+			var suggestions []Suggestion
+
+			snapshot := pm.GetMetricsSnapshot()
+			if systemInfo, ok := snapshot["system"].(map[string]interface{}); ok {
+				heapAllocMB, ok := systemInfo["heap_alloc_mb"].(float64)
+				if !ok {
+					return suggestions
+				}
+
+				var severity SeverityLevel
+				var action string
+
+				if heapAllocMB > 1024 { // 超过1GB
+					severity = SeverityCritical
+					action = "检查内存泄漏，考虑增加垃圾回收频率，或者分割大型数据集"
+				} else if heapAllocMB > 512 { // 超过512MB
+					severity = SeverityWarning
+					action = "监控内存增长趋势，优化大型对象的创建和销毁"
+				} else if heapAllocMB > 256 { // 超过256MB
+					severity = SeverityInfo
+					action = "注意内存使用情况，为未来增长做准备"
+				} else {
+					return suggestions // 内存使用正常
+				}
+
+				suggestions = append(suggestions, Suggestion{
+					RuleName:    "memory_usage",
+					Severity:    severity,
+					Description: fmt.Sprintf("堆内存分配达到%.2fMB", heapAllocMB),
+					Action:      action,
+					Timestamp:   time.Now(),
+				})
+			}
+
+			return suggestions
+		},
+	})
+
+	// 缓存命中率规则
+	pa.RegisterRule(AdvisorRule{
+		Name:        "cache_hit_ratio",
+		Description: "检测缓存命中率是否过低",
+		Evaluate: func(pm *PerformanceMonitor) []Suggestion {
+			var suggestions []Suggestion
+
+			cacheHitRatioMetric, exists := pm.GetMetric("cache_hit_ratio")
+			if !exists {
+				return suggestions
+			}
+
+			if gauge, ok := cacheHitRatioMetric.(*Gauge); ok {
+				hitRatio := gauge.Value().(float64)
+
+				var severity SeverityLevel
+				var action string
+
+				if hitRatio < 0.5 { // 低于50%
+					severity = SeverityCritical
+					action = "调整缓存大小，优化缓存策略，或者预加载常用数据"
+				} else if hitRatio < 0.7 { // 低于70%
+					severity = SeverityWarning
+					action = "分析访问模式，调整缓存替换算法"
+				} else if hitRatio < 0.8 { // 低于80%
+					severity = SeverityInfo
+					action = "考虑微调缓存参数以进一步提高命中率"
+				} else {
+					return suggestions // 缓存效率良好
+				}
+
+				suggestions = append(suggestions, Suggestion{
+					RuleName:    "cache_hit_ratio",
+					Severity:    severity,
+					Description: fmt.Sprintf("缓存命中率为%.1f%%", hitRatio*100),
+					Action:      action,
+					Timestamp:   time.Now(),
+				})
+			}
+
+			return suggestions
+		},
+	})
+}
+
+// Analyze 分析性能并生成建议
+func (pa *PerformanceAdvisor) Analyze() []Suggestion {
+	if !pa.IsEnabled() {
+		return nil
+	}
+
+	pa.mu.Lock()
+	defer pa.mu.Unlock()
+
+	var newSuggestions []Suggestion
+
+	// 运行所有规则
+	for _, rule := range pa.rules {
+		suggestions := rule.Evaluate(pa.monitor)
+		if len(suggestions) > 0 {
+			newSuggestions = append(newSuggestions, suggestions...)
+		}
+	}
+
+	// 添加到建议历史
+	pa.suggestions = append(pa.suggestions, newSuggestions...)
+
+	// 限制建议历史长度
+	if len(pa.suggestions) > 100 {
+		pa.suggestions = pa.suggestions[len(pa.suggestions)-100:]
+	}
+
+	return newSuggestions
+}
+
+// GetSuggestions 获取所有建议
+func (pa *PerformanceAdvisor) GetSuggestions() []Suggestion {
+	pa.mu.RLock()
+	defer pa.mu.RUnlock()
+
+	return pa.suggestions
+}
+
+// ClearSuggestions 清空建议历史
+func (pa *PerformanceAdvisor) ClearSuggestions() {
+	pa.mu.Lock()
+	defer pa.mu.Unlock()
+
+	pa.suggestions = make([]Suggestion, 0)
+}
+
+// Enable 启用顾问
+func (pa *PerformanceAdvisor) Enable() {
+	pa.mu.Lock()
+	defer pa.mu.Unlock()
+
+	pa.enabled = true
+}
+
+// Disable 禁用顾问
+func (pa *PerformanceAdvisor) Disable() {
+	pa.mu.Lock()
+	defer pa.mu.Unlock()
+
+	pa.enabled = false
+}
+
+// IsEnabled 检查是否启用
+func (pa *PerformanceAdvisor) IsEnabled() bool {
+	pa.mu.RLock()
+	defer pa.mu.RUnlock()
+
+	return pa.enabled
+}
 
 // PerformanceStats 定义存储引擎性能统计信息
 type PerformanceStats struct {
@@ -296,107 +1147,4 @@ func (c *DefaultPerformanceCollector) AddMetric(name string, value interface{}) 
 	defer c.mu.Unlock()
 
 	c.stats.ExtraInfo[name] = value
-}
-
-// PerformanceAdvisor 性能顾问接口，分析性能数据并提供优化建议
-type PerformanceAdvisor interface {
-	// 分析性能数据
-	Analyze(stats *PerformanceStats) []string
-}
-
-// DefaultPerformanceAdvisor 默认性能顾问实现
-type DefaultPerformanceAdvisor struct {
-	// 性能阈值
-	slowGetThresholdNs      int64   // 慢读阈值（纳秒）
-	slowPutThresholdNs      int64   // 慢写阈值（纳秒）
-	lowCacheHitRatio        float64 // 低缓存命中率阈值
-	highCompactionTimeRatio float64 // 高压缩时间比例阈值
-}
-
-// NewPerformanceAdvisor 创建新的性能顾问
-func NewPerformanceAdvisor() PerformanceAdvisor {
-	return &DefaultPerformanceAdvisor{
-		slowGetThresholdNs:      5000000,  // 5毫秒
-		slowPutThresholdNs:      10000000, // 10毫秒
-		lowCacheHitRatio:        0.8,      // 80%
-		highCompactionTimeRatio: 0.1,      // 10%
-	}
-}
-
-// Analyze 分析性能数据，给出优化建议
-func (a *DefaultPerformanceAdvisor) Analyze(stats *PerformanceStats) []string {
-	var suggestions []string
-
-	// 计算平均延迟
-	var avgGetLatencyNs, avgPutLatencyNs, avgDeleteLatencyNs, avgScanLatencyNs int64
-
-	if stats.GetCount > 0 {
-		avgGetLatencyNs = stats.GetTotalLatency / stats.GetCount
-	}
-	if stats.PutCount > 0 {
-		avgPutLatencyNs = stats.PutTotalLatency / stats.PutCount
-	}
-	if stats.DeleteCount > 0 {
-		avgDeleteLatencyNs = stats.DeleteTotalLatency / stats.DeleteCount
-	}
-	if stats.ScanCount > 0 {
-		avgScanLatencyNs = stats.ScanTotalLatency / stats.ScanCount
-	}
-
-	// 计算运行时间（秒）
-	duration := stats.EndTime.Sub(stats.StartTime).Seconds()
-
-	// 检查读延迟
-	if avgGetLatencyNs > a.slowGetThresholdNs {
-		suggestions = append(suggestions, fmt.Sprintf(
-			"读操作平均延迟(%d纳秒)超过阈值(%d纳秒)，建议增加缓存大小或优化索引",
-			avgGetLatencyNs, a.slowGetThresholdNs))
-	}
-
-	// 检查写延迟
-	if avgPutLatencyNs > a.slowPutThresholdNs {
-		suggestions = append(suggestions, fmt.Sprintf(
-			"写操作平均延迟(%d纳秒)超过阈值(%d纳秒)，建议调整写缓冲区大小或降低WAL同步频率",
-			avgPutLatencyNs, a.slowPutThresholdNs))
-	}
-
-	// 检查缓存命中率
-	if stats.CacheHitRatio < a.lowCacheHitRatio && (stats.CacheHits+stats.CacheMisses) > 1000 {
-		suggestions = append(suggestions, fmt.Sprintf(
-			"缓存命中率(%.2f%%)过低，建议增加缓存大小或调整缓存策略",
-			stats.CacheHitRatio*100))
-	}
-
-	// 检查压缩时间占比
-	compactionTimeSeconds := float64(stats.CompactionTimeMs) / 1000.0
-	compactionTimeRatio := compactionTimeSeconds / duration
-	if compactionTimeRatio > a.highCompactionTimeRatio && stats.CompactionCount > 5 {
-		suggestions = append(suggestions, fmt.Sprintf(
-			"压缩操作占用时间比例(%.2f%%)过高，建议调整压缩策略或增加专用压缩线程",
-			compactionTimeRatio*100))
-	}
-
-	// 检查读写比例
-	if stats.PutCount+stats.DeleteCount > 0 {
-		readWriteRatio := float64(stats.GetCount) / float64(stats.PutCount+stats.DeleteCount)
-		if readWriteRatio < 1.0 {
-			suggestions = append(suggestions, "写操作比例过高，建议使用批量写入或调整为写优化模式")
-		} else if readWriteRatio > 10.0 {
-			suggestions = append(suggestions, "读操作比例过高，建议使用读优化配置或增加索引")
-		}
-	}
-
-	// 检查内存使用
-	if stats.MemoryUsageBytes > 1073741824 { // 1GB
-		suggestions = append(suggestions, fmt.Sprintf(
-			"内存使用量(%.2fGB)较高，建议检查内存泄漏或调整内存限制",
-			float64(stats.MemoryUsageBytes)/(1024*1024*1024)))
-	}
-
-	// 如果没有问题，添加一个积极的反馈
-	if len(suggestions) == 0 {
-		suggestions = append(suggestions, "性能指标良好，未发现明显问题")
-	}
-
-	return suggestions
 }

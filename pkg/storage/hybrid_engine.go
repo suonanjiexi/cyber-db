@@ -10,6 +10,30 @@ import (
 	"github.com/cyberdb/cyberdb/pkg/common/logger"
 )
 
+// CachePolicy 缓存策略
+type CachePolicy int
+
+const (
+	// CachePolicyLRU 最近最少使用策略
+	CachePolicyLRU CachePolicy = iota
+	// CachePolicyLFU 最不经常使用策略
+	CachePolicyLFU
+	// CachePolicyARC 自适应替换缓存策略
+	CachePolicyARC
+	// CachePolicyTwoQ 2Q缓存策略
+	CachePolicyTwoQ
+)
+
+// CacheStat 缓存统计信息
+type CacheStat struct {
+	HitCount      int64
+	MissCount     int64
+	EvictionCount int64
+	Size          int64
+	MaxSize       int64
+	HitRatio      float64
+}
+
 // HybridEngine 是一个混合存储引擎，结合了内存引擎和磁盘引擎的优点
 // 用于HTAP场景，其中OLTP操作主要在内存中进行，而OLAP操作则可以利用磁盘引擎
 type HybridEngine struct {
@@ -48,6 +72,24 @@ type HybridEngine struct {
 
 	// 是否启用自动刷盘
 	autoFlush bool
+
+	// 缓存配置
+	cachePolicy  CachePolicy
+	maxCacheSize int64
+	cacheStats   CacheStat
+	cacheMu      sync.RWMutex
+
+	// 热点数据缓存
+	hotCache map[string]interface{}
+	// 访问频率记录
+	accessFreq map[string]int
+	// 最后访问时间记录
+	lastAccess map[string]time.Time
+
+	// 预加载配置
+	enablePreload    bool
+	preloadThreshold int
+	preloadPattern   map[string][]string // 记录访问模式
 }
 
 // NewHybridEngine 创建一个新的混合存储引擎
@@ -310,43 +352,303 @@ func (e *HybridEngine) DropTable(ctx context.Context, dbName, tableName string) 
 
 // Get 获取数据
 func (e *HybridEngine) Get(ctx context.Context, dbName, tableName string, key []byte) ([]byte, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	// 构造缓存键
+	cacheKey := fmt.Sprintf("%s:%s:%s", dbName, tableName, string(key))
 
-	// 先检查写入缓冲区
-	keyStr := string(key)
-	e.bufferMu.Lock()
-	if db, ok := e.writeBuffer[dbName]; ok {
-		if table, ok := db[tableName]; ok {
-			if value, ok := table[keyStr]; ok {
-				e.bufferMu.Unlock()
-				return value, nil
-			}
-		}
+	// 尝试从缓存获取
+	cachedValue := e.getFromCache(cacheKey)
+	if cachedValue != nil {
+		// 缓存命中
+		e.cacheMu.Lock()
+		e.cacheStats.HitCount++
+		e.cacheStats.HitRatio = float64(e.cacheStats.HitCount) / float64(e.cacheStats.HitCount+e.cacheStats.MissCount)
+		e.cacheMu.Unlock()
+
+		// 更新访问记录
+		e.updateAccessStats(cacheKey)
+
+		// 返回缓存的值
+		return cachedValue.([]byte), nil
 	}
 
-	// 检查删除缓冲区
-	if db, ok := e.deleteBuffer[dbName]; ok {
-		if table, ok := db[tableName]; ok {
-			if deleted, ok := table[keyStr]; ok && deleted {
-				e.bufferMu.Unlock()
-				return nil, ErrKeyNotFound
-			}
-		}
-	}
-	e.bufferMu.Unlock()
+	// 缓存未命中，更新统计
+	e.cacheMu.Lock()
+	e.cacheStats.MissCount++
+	e.cacheStats.HitRatio = float64(e.cacheStats.HitCount) / float64(e.cacheStats.HitCount+e.cacheStats.MissCount)
+	e.cacheMu.Unlock()
 
-	// 先从内存引擎获取
+	// 尝试从内存引擎获取
 	value, err := e.memEngine.Get(ctx, dbName, tableName, key)
 	if err == nil {
+		// 内存引擎中找到，添加到缓存
+		e.addToCache(cacheKey, value)
+
+		// 更新访问记录
+		e.updateAccessStats(cacheKey)
+
 		return value, nil
-	}
-	if err != ErrKeyNotFound {
+	} else if err != ErrKeyNotFound {
+		// 发生了除"键不存在"之外的错误
 		return nil, err
 	}
 
-	// 如果内存中没有找到，从磁盘引擎获取
-	return e.diskEngine.Get(ctx, dbName, tableName, key)
+	// 内存引擎中未找到，尝试从磁盘引擎获取
+	value, err = e.diskEngine.Get(ctx, dbName, tableName, key)
+	if err == nil {
+		// 磁盘引擎中找到，添加到缓存
+		e.addToCache(cacheKey, value)
+
+		// 尝试预加载相关数据
+		if e.enablePreload {
+			go e.preloadRelatedData(ctx, dbName, tableName, key)
+		}
+
+		// 更新访问记录
+		e.updateAccessStats(cacheKey)
+
+		// 如果是频繁访问的数据，考虑添加到内存引擎
+		if e.shouldPromoteToMemory(cacheKey) {
+			e.memEngine.Put(ctx, dbName, tableName, key, value)
+		}
+
+		return value, nil
+	}
+
+	// 键不存在
+	return nil, err
+}
+
+// 从缓存获取值
+func (e *HybridEngine) getFromCache(key string) interface{} {
+	e.cacheMu.RLock()
+	defer e.cacheMu.RUnlock()
+
+	if e.hotCache == nil {
+		return nil
+	}
+
+	return e.hotCache[key]
+}
+
+// 添加到缓存
+func (e *HybridEngine) addToCache(key string, value []byte) {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+
+	if e.hotCache == nil {
+		e.hotCache = make(map[string]interface{})
+		e.accessFreq = make(map[string]int)
+		e.lastAccess = make(map[string]time.Time)
+	}
+
+	// 检查是否需要淘汰
+	if e.cacheStats.Size+int64(len(value)) > e.maxCacheSize {
+		e.evictCache()
+	}
+
+	// 添加到缓存
+	e.hotCache[key] = value
+	e.accessFreq[key] = 1
+	e.lastAccess[key] = time.Now()
+
+	// 更新缓存大小
+	e.cacheStats.Size += int64(len(value))
+}
+
+// 淘汰缓存
+func (e *HybridEngine) evictCache() {
+	if len(e.hotCache) == 0 {
+		return
+	}
+
+	var keyToEvict string
+
+	switch e.cachePolicy {
+	case CachePolicyLRU:
+		// 找出最久未访问的键
+		oldestTime := time.Now()
+		for k, t := range e.lastAccess {
+			if t.Before(oldestTime) {
+				oldestTime = t
+				keyToEvict = k
+			}
+		}
+
+	case CachePolicyLFU:
+		// 找出访问频率最低的键
+		minFreq := int(^uint(0) >> 1) // 最大整数
+		for k, freq := range e.accessFreq {
+			if freq < minFreq {
+				minFreq = freq
+				keyToEvict = k
+			}
+		}
+
+	case CachePolicyARC, CachePolicyTwoQ:
+		// ARC和2Q策略比较复杂，这里简化为LRU
+		oldestTime := time.Now()
+		for k, t := range e.lastAccess {
+			if t.Before(oldestTime) {
+				oldestTime = t
+				keyToEvict = k
+			}
+		}
+	}
+
+	// 从缓存中移除
+	if value, exists := e.hotCache[keyToEvict]; exists {
+		e.cacheStats.Size -= int64(len(value.([]byte)))
+		delete(e.hotCache, keyToEvict)
+		delete(e.accessFreq, keyToEvict)
+		delete(e.lastAccess, keyToEvict)
+		e.cacheStats.EvictionCount++
+	}
+}
+
+// 更新访问统计
+func (e *HybridEngine) updateAccessStats(key string) {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+
+	if e.accessFreq == nil {
+		e.accessFreq = make(map[string]int)
+		e.lastAccess = make(map[string]time.Time)
+	}
+
+	// 更新访问频率
+	e.accessFreq[key]++
+
+	// 更新最后访问时间
+	e.lastAccess[key] = time.Now()
+}
+
+// 判断是否应该将数据提升到内存引擎
+func (e *HybridEngine) shouldPromoteToMemory(key string) bool {
+	e.cacheMu.RLock()
+	defer e.cacheMu.RUnlock()
+
+	// 如果访问频率超过阈值，考虑提升到内存
+	if freq, exists := e.accessFreq[key]; exists && freq > e.preloadThreshold {
+		return true
+	}
+
+	return false
+}
+
+// 预加载相关数据
+func (e *HybridEngine) preloadRelatedData(ctx context.Context, dbName, tableName string, key []byte) {
+	// 获取访问模式
+	patterns := e.getAccessPatterns(dbName, tableName, string(key))
+
+	// 预加载相关数据
+	for _, relatedKey := range patterns {
+		// 跳过当前键
+		if relatedKey == string(key) {
+			continue
+		}
+
+		// 检查是否已经在缓存中
+		cacheKey := fmt.Sprintf("%s:%s:%s", dbName, tableName, relatedKey)
+		if e.getFromCache(cacheKey) != nil {
+			continue
+		}
+
+		// 尝试加载数据
+		value, err := e.diskEngine.Get(ctx, dbName, tableName, []byte(relatedKey))
+		if err == nil {
+			// 添加到缓存
+			e.addToCache(cacheKey, value)
+		}
+	}
+}
+
+// 获取访问模式
+func (e *HybridEngine) getAccessPatterns(dbName, tableName, key string) []string {
+	e.cacheMu.RLock()
+	defer e.cacheMu.RUnlock()
+
+	patternKey := fmt.Sprintf("%s:%s:%s", dbName, tableName, key)
+
+	if e.preloadPattern == nil {
+		return nil
+	}
+
+	return e.preloadPattern[patternKey]
+}
+
+// 记录访问模式
+func (e *HybridEngine) recordAccessPattern(dbName, tableName string, key1, key2 string) {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+
+	if e.preloadPattern == nil {
+		e.preloadPattern = make(map[string][]string)
+	}
+
+	patternKey1 := fmt.Sprintf("%s:%s:%s", dbName, tableName, key1)
+	patternKey2 := fmt.Sprintf("%s:%s:%s", dbName, tableName, key2)
+
+	// 记录key1之后访问了key2
+	pattern1 := e.preloadPattern[patternKey1]
+	patternExists := false
+	for _, k := range pattern1 {
+		if k == key2 {
+			patternExists = true
+			break
+		}
+	}
+
+	if !patternExists {
+		e.preloadPattern[patternKey1] = append(pattern1, key2)
+	}
+
+	// 记录key2之后访问了key1
+	pattern2 := e.preloadPattern[patternKey2]
+	patternExists = false
+	for _, k := range pattern2 {
+		if k == key1 {
+			patternExists = true
+			break
+		}
+	}
+
+	if !patternExists {
+		e.preloadPattern[patternKey2] = append(pattern2, key1)
+	}
+}
+
+// EnablePreload 启用预加载功能
+func (e *HybridEngine) EnablePreload(enable bool, threshold int) {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+
+	e.enablePreload = enable
+	e.preloadThreshold = threshold
+}
+
+// GetCacheStats 获取缓存统计信息
+func (e *HybridEngine) GetCacheStats() CacheStat {
+	e.cacheMu.RLock()
+	defer e.cacheMu.RUnlock()
+
+	return e.cacheStats
+}
+
+// ClearCache 清空缓存
+func (e *HybridEngine) ClearCache() {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+
+	e.hotCache = make(map[string]interface{})
+	e.accessFreq = make(map[string]int)
+	e.lastAccess = make(map[string]time.Time)
+	e.preloadPattern = make(map[string][]string)
+
+	e.cacheStats.Size = 0
+	e.cacheStats.HitCount = 0
+	e.cacheStats.MissCount = 0
+	e.cacheStats.EvictionCount = 0
+	e.cacheStats.HitRatio = 0
 }
 
 // Put 存储数据
@@ -994,4 +1296,18 @@ func (e *HybridEngine) Flush(ctx context.Context) error {
 
 	// 刷新磁盘引擎
 	return e.diskEngine.Flush(ctx)
+}
+
+// SetCachePolicy 设置缓存策略
+func (e *HybridEngine) SetCachePolicy(policy CachePolicy, maxSizeMB int64) {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+
+	e.cachePolicy = policy
+	e.maxCacheSize = maxSizeMB * 1024 * 1024 // 转换为字节
+
+	// 重置缓存统计
+	e.cacheStats = CacheStat{
+		MaxSize: e.maxCacheSize,
+	}
 }

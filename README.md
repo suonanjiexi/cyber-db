@@ -11,10 +11,11 @@ CyberDB 是一个兼容 MySQL 的云原生 HTAP（混合事务分析处理）数
 - **高可用集群**：支持多节点集群模式，自动故障转移
 - **HTAP 支持**：同时支持事务处理和分析查询
 - **混合存储引擎**：结合内存和磁盘存储，优化OLTP和OLAP性能
+- **列式存储**：提供高效的列式存储引擎，优化OLAP性能
 - **写入缓冲**：异步批量刷盘，提高写入性能
 - **灵活配置**：支持不同场景的存储引擎配置
 - **备份恢复**：支持数据备份和恢复功能
-- **性能监控**：提供引擎性能统计和监控
+- **性能监控**：提供实时性能统计和诊断功能
 
 ## 系统架构
 
@@ -26,8 +27,10 @@ CyberDB 采用模块化设计，主要由以下组件组成：
    - **内存引擎**：适用于OLTP场景，提供高性能的读写操作
    - **磁盘引擎**：基于Pebble，提供持久化存储，适用于大规模数据
    - **混合引擎**：结合内存和磁盘引擎优点，适用于HTAP场景
+   - **列式存储引擎**：优化分析查询，提供高效的OLAP支持
 4. **复制系统**：基于 Raft 协议的数据复制
 5. **集群管理**：负责节点间通信和状态同步
+6. **性能监控**：实时监控存储引擎性能指标，提供诊断能力
 
 系统支持三种部署模式：
 - **单节点模式**：适用于开发和测试环境
@@ -138,23 +141,19 @@ htap:
 
 ## 备份和恢复
 
-CyberDB 提供了数据备份和恢复功能，可以通过命令行工具或API调用来执行：
+CyberDB 提供了数据备份和恢复功能，支持通过命令行工具或API进行操作：
 
-### 备份数据
-
-```bash
-# 备份所有数据到指定目录
-./bin/cyberdb backup --output=/backup/cyberdb_backup_$(date +%Y%m%d)
-```
-
-### 恢复数据
+### 命令行工具
 
 ```bash
-# 从备份目录恢复数据
-./bin/cyberdb restore --input=/backup/cyberdb_backup_20230601
+# 备份数据到指定目录
+./bin/cyberdb-tools backup --output=/backup/cyberdb_backup --engine=hybrid --data-dir=data
+
+# 从备份恢复数据
+./bin/cyberdb-tools restore --input=/backup/cyberdb_backup_latest --engine=hybrid --data-dir=data --force
 ```
 
-也可以通过API在运行时执行备份恢复操作：
+### API方式
 
 ```go
 // 备份数据
@@ -164,36 +163,89 @@ err := storage.BackupEngine(engine, "/backup/path")
 err := storage.RestoreEngine(engine, "/backup/path")
 ```
 
-## 性能测试
+## 性能监控
 
-运行HTAP性能基准测试：
+CyberDB 提供了全面的性能监控能力，支持实时监控和性能诊断：
+
+### 命令行监控工具
+
+使用内置的监控命令查看实时性能指标：
 
 ```bash
-make bench-htap
+# 实时监控数据库性能
+./bin/cyberdb-tools monitor --engine=hybrid --interval=5
+
+# 监控10分钟后自动退出
+./bin/cyberdb-tools monitor --engine=hybrid --interval=5 --time=600
 ```
 
-这将测试各种存储引擎在OLTP、OLAP和混合HTAP场景下的性能表现。
+### 性能采集和分析API
 
-## 引擎性能监控
-
-CyberDB 提供了对存储引擎性能的监控支持，可以通过API获取实时性能统计信息：
+通过代码使用性能监控API：
 
 ```go
-// 获取引擎状态信息
-status, err := storage.GetEngineStatus(engine)
-fmt.Printf("引擎类型: %s\n", status.Type)
-fmt.Printf("读操作数: %d\n", status.ReadOperations)
-fmt.Printf("写操作数: %d\n", status.WriteOperations)
+// 创建性能监控器
+monitor := storage.NewPerformanceMonitor(engine, 5*time.Second, 100)
+monitor.Start()
 
-// 使用统计信息收集器
-collector := storage.NewStatisticsCollector()
-collector.RecordRead(10 * time.Millisecond)
-collector.RecordWrite(5 * time.Millisecond)
+// 记录操作性能
+startTime := time.Now()
+// ... 执行某些操作 ...
+monitor.RecordRead(time.Since(startTime))
 
-stats := collector.GetStatistics()
-fmt.Printf("平均读延迟: %v\n", stats.ReadLatency)
-fmt.Printf("平均写延迟: %v\n", stats.WriteLatency)
+// 获取性能报告
+report := monitor.GenerateReport()
+fmt.Println(report)
+
+// 获取最新的性能样本
+sample := monitor.GetLatestSample()
+fmt.Printf("读吞吐量: %.2f ops/s, 平均延迟: %d ns\n", 
+    sample.Throughput.ReadsPerSec, sample.Latencies.AvgReadLatency)
 ```
+
+### 性能顾问
+
+系统提供性能顾问功能，可自动分析性能问题并提供优化建议：
+
+```go
+advisor := storage.NewPerformanceAdvisor()
+suggestions := advisor.Analyze(monitor.GetLatestSample())
+for _, suggestion := range suggestions {
+    fmt.Println(suggestion)
+}
+```
+
+## 列式存储
+
+CyberDB 实现了高效的列式存储引擎，专为OLAP查询优化：
+
+```go
+// 创建列式存储表
+schema := &storage.TableSchema{
+    Columns: []storage.ColumnDef{
+        {Name: "id", Type: storage.ColumnTypeInt},
+        {Name: "name", Type: storage.ColumnTypeString},
+        {Name: "value", Type: storage.ColumnTypeFloat},
+    },
+}
+err := columnStore.CreateColumnTable(ctx, "analytics", "sales", schema)
+
+// 插入数据
+rowID, err := columnStore.InsertRow(ctx, "analytics", "sales", map[string]interface{}{
+    "id": 1,
+    "name": "product1",
+    "value": 99.9,
+})
+
+// 高效的列扫描
+values, err := columnStore.ScanColumn(ctx, "analytics", "sales", "value")
+```
+
+列式存储特别适合大规模数据分析场景，如：
+- 数据仓库
+- 实时分析
+- 报表生成
+- 聚合计算
 
 ## 示例
 
