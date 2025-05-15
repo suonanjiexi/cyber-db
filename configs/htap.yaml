@@ -1,0 +1,114 @@
+# CyberDB HTAP模式配置
+
+# 服务器设置
+server:
+  host: "0.0.0.0"
+  port: 3306
+  max_connections: 1000
+  connection_timeout_ms: 30000
+
+# 存储引擎配置
+storage:
+  # 使用混合存储引擎
+  type: "hybrid"
+  # 数据存储目录
+  data_dir: "data/htap"
+  # 同步到磁盘的间隔（毫秒）
+  sync_interval_ms: 1000
+  # 最大写入缓冲区大小（MB）
+  max_buffer_size_mb: 128
+  # 启用自动刷盘
+  auto_flush: true
+
+# 计算引擎配置
+compute:
+  # 查询优化级别（0-3）
+  optimization_level: 2
+  # 最大并行度
+  max_parallelism: 8
+  # 查询超时（秒）
+  query_timeout_sec: 300
+
+# 复制设置（集群模式）
+replication:
+  # 是否启用复制
+  enabled: true
+  # 节点ID
+  node_id: 1
+  # 节点地址
+  node_addr: "localhost:3306"
+  # 集群其他节点
+  peers:
+    - node_id: 2
+      node_addr: "localhost:3307"
+    - node_id: 3
+      node_addr: "localhost:3308"
+  # Raft设置
+  raft:
+    heartbeat_interval_ms: 100
+    election_timeout_ms: 500
+    snapshot_interval_count: 10000
+    snapshot_threshold_count: 8000
+
+# HTAP特有配置
+htap:
+  # 是否分离OLTP和OLAP请求
+  separate_processing: true
+  # 分析型查询路由策略（memory, disk, auto）
+  # memory: 尽量使用内存引擎
+  # disk: 尽量使用磁盘引擎
+  # auto: 自动选择最优引擎
+  analytical_query_routing: "auto"
+  # 是否启用查询缓存
+  query_cache_enabled: true
+  # 查询缓存大小（MB）
+  query_cache_size_mb: 256
+  # 分析型查询最大内存使用（MB）
+  analytical_max_memory_mb: 1024
+  
+# 缓存设置
+cache:
+  # 全局行缓存大小（MB）
+  row_cache_size_mb: 512
+  # 表元数据缓存大小（MB）
+  metadata_cache_size_mb: 64
+  # 索引缓存大小（MB）
+  index_cache_size_mb: 256
+
+# 性能设置
+performance:
+  # 预写日志（WAL）设置
+  wal:
+    # 是否启用WAL
+    enabled: true
+    # WAL同步模式（sync, async, none）
+    sync_mode: "async"
+    # WAL刷盘间隔（毫秒）
+    sync_interval_ms: 100
+  
+  # 后台任务
+  background_tasks:
+    # 表压缩任务
+    compaction:
+      # 是否启用自动压缩
+      enabled: true
+      # 压缩间隔（秒）
+      interval_sec: 3600
+    
+    # 统计信息收集
+    stats_collection:
+      # 是否启用统计信息收集
+      enabled: true
+      # 收集间隔（秒）
+      interval_sec: 300
+
+# 安全设置
+security:
+  # 身份验证方法（password, mysql_native, ldap）
+  auth_method: "mysql_native"
+  # 是否启用TLS
+  tls_enabled: false
+  # TLS证书路径
+  tls_cert_path: "certs/server.crt"
+  # TLS密钥路径
+  tls_key_path: "certs/server.key" 

@@ -1,0 +1,37 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# 集群管理
+
+集群管理负责处理节点间通信和状态同步，确保集群正常运行。
+
+## 核心组件
+
+- [pkg/cluster/manager.go](mdc:pkg/cluster/manager.go): 集群管理器实现
+
+## 集群节点状态
+
+节点可能处于以下状态：
+- `NodeStatusUnknown`: 未知状态
+- `NodeStatusOnline`: 在线状态
+- `NodeStatusOffline`: 离线状态
+- `NodeStatusFailed`: 故障状态
+
+## 节点角色
+
+集群中的节点可以有不同角色：
+- `NodeRoleLeader`: 主节点，负责写操作
+- `NodeRoleFollower`: 从节点，负责读操作
+
+## 心跳机制
+
+集群通过定期心跳检测确保节点状态同步，心跳信息包括：
+- 节点ID
+- 节点状态
+- 最后一次更新时间
+
+## 配置和部署
+
+集群配置在`configs/cluster-master.yaml`和`configs/cluster-slave.yaml`中定义，包括节点ID、地址和角色等信息。

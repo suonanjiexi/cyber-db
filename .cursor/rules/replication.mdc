@@ -1,0 +1,29 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# 数据复制系统
+
+CyberDB使用Raft协议实现数据复制，确保集群中的数据一致性。
+
+## 核心组件
+
+- [pkg/replication/manager.go](mdc:pkg/replication/manager.go): 复制管理器，负责复制系统的整体管理
+- [pkg/replication/raft.go](mdc:pkg/replication/raft.go): Raft协议实现，包含RaftReplicator和RaftFSM
+- [pkg/replication/storage_handler.go](mdc:pkg/replication/storage_handler.go): 存储引擎与复制系统的集成
+
+## Raft复制
+
+CyberDB使用Hashicorp的Raft库实现复制，主要特点：
+
+1. 主从架构：一个主节点(Leader)负责写操作，多个从节点负责读操作
+2. 日志复制：所有写操作先写入主节点的Raft日志，然后复制到从节点
+3. 选举机制：当主节点故障时，从节点会自动选举新的主节点
+4. 一致性保证：确保集群中的所有节点最终看到相同的数据
+
+## 主要数据结构
+
+- `RaftCommand`: 封装存储引擎的操作命令，包括操作类型、数据库名、表名等
+- `RaftFSM`: Raft状态机，应用日志到存储引擎
+- `RaftSnapshot`: 状态机快照，用于新节点加入时的数据同步

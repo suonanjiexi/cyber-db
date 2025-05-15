@@ -1,0 +1,29 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# 计算引擎
+
+计算引擎负责SQL解析和执行，是CyberDB的核心组件之一。
+
+## 核心组件
+
+- [pkg/compute/local_engine.go](mdc:pkg/compute/local_engine.go): 本地计算引擎实现，处理SQL执行
+- `Session`: 维护客户端会话状态
+- `Result`: 执行结果
+
+## SQL执行流程
+
+1. 解析SQL语句: 调用Parser解析SQL为语法树
+2. 执行策略制定: 根据SQL类型选择执行方法
+3. 存储引擎交互: 通过存储引擎接口执行实际操作
+4. 结果处理: 将存储引擎返回的结果转换为客户端可理解的格式
+
+## 支持的SQL操作
+
+- DDL: CREATE/DROP DATABASE, CREATE/DROP TABLE
+- DML: SELECT, INSERT, UPDATE, DELETE
+- 其他: USE, SHOW DATABASES/TABLES
+
+计算引擎负责将这些操作转换为对存储引擎的调用，并处理事务控制。

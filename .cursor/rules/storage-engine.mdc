@@ -1,0 +1,26 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# 存储引擎
+
+存储引擎是CyberDB的核心组件，负责数据的存储和检索。
+
+## 核心接口
+
+主要接口定义在[pkg/storage/engine.go](mdc:pkg/storage/engine.go)中：
+
+- `Engine`: 存储引擎接口，定义了所有存储操作
+- `Transaction`: 事务接口
+- `Iterator`: 迭代器接口
+- `TableSchema`: 表结构定义
+- `ReplicationHandler`: 复制处理器接口
+
+## 内存引擎实现
+
+内存引擎是一个仅用于开发和测试的简单存储引擎，实现在[pkg/storage/memory_engine.go](mdc:pkg/storage/memory_engine.go)中。
+
+## 复制集成
+
+存储引擎通过`ReplicationHandler`接口与复制系统集成，将写操作同步到从节点。

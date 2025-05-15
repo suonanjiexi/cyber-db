@@ -1,0 +1,44 @@
+server:
+  # 服务器ID
+  id: node-1
+  # 服务监听地址
+  host: 0.0.0.0
+  # MySQL协议端口
+  mysql_port: 3306
+  # HTTP管理接口端口
+  http_port: 8080
+  # 内部gRPC通信端口
+  grpc_port: 9000
+
+storage:
+  # 存储引擎类型：memory/rocksdb
+  engine: memory
+  # 数据目录路径
+  data_dir: ./data
+  # WAL日志目录
+  wal_dir: ./wal
+
+cluster:
+  # 是否启用集群模式
+  enabled: false
+  # 集群成员
+  members:
+    - id: node-1
+      address: localhost:9000
+      role: leader
+
+replication:
+  # 是否启用复制
+  enabled: false
+  # 复制方式：raft/binlog
+  mode: raft
+  # 复制端口
+  port: 9010
+
+log:
+  # 日志级别：debug/info/warn/error
+  level: info
+  # 日志输出：stdout/file
+  output: stdout
+  # 日志文件路径（如果输出到文件）
+  file_path: ./logs/cyberdb.log 

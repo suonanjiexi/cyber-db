@@ -1,0 +1,39 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# MySQL协议实现
+
+CyberDB实现了MySQL协议，使客户端能够通过标准MySQL连接器连接数据库。
+
+## 核心组件
+
+- [pkg/protocol/mysql.go](mdc:pkg/protocol/mysql.go): MySQL协议实现
+
+## 协议处理流程
+
+1. 握手阶段
+   - 发送初始握手包
+   - 验证客户端响应
+   - 发送OK包
+
+2. 命令处理阶段
+   - 接收命令包
+   - 根据命令类型分发处理
+   - 返回结果集或错误信息
+
+## 支持的命令
+
+- `ComQuit`: 客户端断开连接
+- `ComQuery`: 执行SQL查询
+- `ComPing`: 心跳检测
+
+## 结果集格式
+
+查询结果按MySQL协议格式返回：
+- 列定义
+- 行数据
+- 结束标志
+
+非查询操作返回影响的行数和最后插入的ID。

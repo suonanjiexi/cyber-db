@@ -1,0 +1,26 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# CyberDB 项目结构
+
+CyberDB是一个兼容MySQL的云原生HTAP数据库系统，基于Go语言实现，具有计算存储分离、一写多读、分布式存储等特性。
+
+## 项目主要结构
+
+- `cmd/server/main.go`: 系统入口点，负责配置加载、组件初始化和服务启动
+- `pkg/`: 所有核心包
+  - `storage/`: 存储引擎实现
+  - `compute/`: 计算引擎实现
+  - `protocol/`: MySQL协议实现
+  - `parser/`: SQL解析器
+  - `cluster/`: 集群管理
+  - `replication/`: 数据复制实现
+  - `common/`: 通用组件(配置、日志等)
+
+## 配置文件
+
+- `configs/single-node.yaml`: 单节点配置
+- `configs/cluster-master.yaml`: 集群主节点配置
+- `configs/cluster-slave.yaml`: 集群从节点配置

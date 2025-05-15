@@ -1,0 +1,39 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# 配置和启动流程
+
+CyberDB的配置和启动机制负责系统初始化和组件协调。
+
+## 配置管理
+
+- [pkg/common/config/config.go](mdc:pkg/common/config/config.go): 配置定义和加载逻辑
+- 主要配置结构：
+  - `ServerConfig`: 服务器配置
+  - `StorageConfig`: 存储引擎配置
+  - `ClusterConfig`: 集群配置
+  - `ReplicationConfig`: 复制配置
+  - `LogConfig`: 日志配置
+
+## 启动流程
+
+[cmd/server/main.go](mdc:cmd/server/main.go)定义了系统启动流程：
+
+1. 加载配置
+2. 初始化日志系统
+3. 启动集群管理器
+4. 创建并打开存储引擎
+5. 创建并启动复制管理器
+6. 设置存储引擎的复制处理
+7. 创建计算引擎
+8. 启动MySQL协议服务器
+9. 监听终止信号，优雅关闭
+
+## 部署模式
+
+CyberDB支持两种部署模式：
+
+1. 单节点模式: 适用于开发和测试
+2. 集群模式: 适用于生产环境，提供高可用性和水平扩展能力
